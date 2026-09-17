@@ -1,0 +1,159 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model User {
+  id               String                @id @default(cuid())
+  email            String                @unique
+  password         String?
+  isVerified       Boolean               @default(false)
+  otp              String?
+  otpExpiresAt     DateTime?
+  createdAt        DateTime              @default(now())
+  updatedAt        DateTime              @updatedAt
+  role             String                @default("CITIZEN")
+  StaffAssignments Assignment[]          @relation("StaffAssignments")
+  Complaints       Complaint[]
+  BuyerInventory   RecyclableInventory[] @relation("InventoryBuyer")
+}
+
+model Complaint {
+  id                    String               @id @default(cuid())
+  userId                String
+  description           String
+  imageUrl              String?
+  latitude              Float
+  longitude             Float
+  address               String?
+  wasteType             String?
+  status                String               @default("Pending")
+  createdAt             DateTime             @default(now())
+  updatedAt             DateTime             @updatedAt
+  aiAccessibility       String?
+  aiHazardousDetected   Boolean              @default(false)
+  aiHazardousTypes      String[]             @default([])
+  aiImageConfidence     Float?
+  aiQualityIndicators   String[]             @default([])
+  aiRelativeVolume      String?
+  aiSuggestedEquipment  String[]             @default([])
+  aiSummary             String?
+  aiWasteCategories     String[]             @default([])
+  aiWasteCondition      String?
+  duplicateOfId         String?
+  duplicateSimilarity   Float?
+  estimatedQuantity     String?
+  estimatedTimeMinutes  Int?
+  isScheduled           Boolean              @default(false)
+  locationDescription   String?
+  masterComplaintId     String?
+  priority              String               @default("STANDARD")
+  requiredHeavyVehicles Int                  @default(0)
+  requiredWorkers       Int                  @default(1)
+  sentimentLabel        String?
+  sentimentScore        Float                @default(0.5)
+  urgencyScore          Int                  @default(1)
+  voteCount             Int                  @default(1)
+  assignments           Assignment[]
+  masterComplaint       Complaint?           @relation("ComplaintMaster", fields: [masterComplaintId], references: [id])
+  childComplaints       Complaint[]          @relation("ComplaintMaster")
+  User                  User                 @relation(fields: [userId], references: [id])
+  linkedComplaintLinks  ComplaintLink[]      @relation("LinkedComplaintLink")
+  masterComplaintLinks  ComplaintLink[]      @relation("MasterComplaintLink")
+  inventory             RecyclableInventory?
+}
+
+model ComplaintLink {
+  id                String    @id @default(cuid())
+  masterComplaintId String
+  linkedComplaintId String
+  similarityScore   Float
+  createdAt         DateTime  @default(now())
+  linkedComplaint   Complaint @relation("LinkedComplaintLink", fields: [linkedComplaintId], references: [id])
+  masterComplaint   Complaint @relation("MasterComplaintLink", fields: [masterComplaintId], references: [id])
+
+  @@unique([masterComplaintId, linkedComplaintId])
+}
+
+model Assignment {
+  id          String    @id @default(cuid())
+  complaintId String
+  staffId     String
+  assignedBy  String
+  status      String    @default("ASSIGNED")
+  assignedAt  DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  complaint   Complaint @relation(fields: [complaintId], references: [id])
+  staff       User      @relation("StaffAssignments", fields: [staffId], references: [id])
+}
+
+model Resource {
+  id            String   @id @default(cuid())
+  date          DateTime @unique
+  workers       Int      @default(0)
+  heavyVehicles Int      @default(0)
+  available     Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+model RecyclableInventory {
+  id                 String              @id @default(cuid())
+  complaintId        String              @unique
+  aiPredictedType    String?
+  aiPredictedVolume  String?
+  aiConfidence       Float?
+  verifiedType       String?
+  verifiedWeightKg   Float?
+  verifiedVolumeCbm  Float?
+  qualityGrade       String?
+  contamination      String?
+  isAvailable        Boolean             @default(false)
+  pricePerKg         Float?
+  buyerId            String?
+  verificationStatus VerificationStatus  @default(PendingVerification)
+  verifiedBy         String?
+  verifiedAt         DateTime?
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  marketplaceListing MarketplaceListing?
+  buyer              User?               @relation("InventoryBuyer", fields: [buyerId], references: [id])
+  complaint          Complaint           @relation(fields: [complaintId], references: [id])
+}
+
+model MarketplaceListing {
+  id               String              @id @default(cuid())
+  inventoryId      String              @unique
+  title            String
+  description      String
+  quantityKg       Float
+  wasteType        String
+  location         String
+  pricePerKg       Float
+  totalPrice       Float
+  images           String[]
+  status           ListingStatus       @default(Active)
+  views            Int                 @default(0)
+  interestedBuyers String[]            @default([])
+  createdAt        DateTime            @default(now())
+  expiresAt        DateTime
+  inventory        RecyclableInventory @relation(fields: [inventoryId], references: [id])
+}
+
+enum VerificationStatus {
+  PendingVerification
+  Verified
+  Rejected
+  Sold
+}
+
+enum ListingStatus {
+  Active
+  Pending
+  Sold
+  Expired
+}

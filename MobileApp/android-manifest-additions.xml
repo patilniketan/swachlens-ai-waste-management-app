@@ -1,0 +1,30 @@
+<!--
+  ANDROID CONFIGURATION — add these lines to:
+  MobileApp/android/app/src/main/AndroidManifest.xml
+
+  Place the <uses-permission> tags above the <application> tag,
+  at the same level as any existing <uses-permission> entries.
+  Only the permissions this app actually needs are listed below.
+-->
+
+<uses-permission android:name="android.permission.INTERNET" />
+<uses-permission android:name="android.permission.CAMERA" />
+<uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+<uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+
+<!--
+  If you use react-native-image-picker's "Choose from Gallery" option on
+  Android 13+ devices, no extra storage permission is required — it uses
+  the system photo picker. On Android 12 and below you may optionally add:
+
+  <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+      android:maxSdkVersion="32" />
+-->
+
+<!--
+  Also ensure your <application> tag declares camera hardware as NOT required,
+  so the app can still be installed on devices without a camera (optional
+  but recommended for a wider install base):
+
+  <uses-feature android:name="android.hardware.camera" android:required="false" />
+-->
