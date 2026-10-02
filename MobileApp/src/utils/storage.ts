@@ -26,7 +26,7 @@ export async function getUser(): Promise<User | null> {
 
 /** Clears the JWT and cached user — used on logout and on 401 responses. */
 export async function clearSession(): Promise<void> {
-  await AsyncStorage.multiRemove([STORAGE_KEYS.TOKEN, STORAGE_KEYS.USER]);
+  await AsyncStorage.removeMany([STORAGE_KEYS.TOKEN, STORAGE_KEYS.USER]);
 }
 
 export async function hasValidSession(): Promise<boolean> {

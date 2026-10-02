@@ -1,14 +1,14 @@
 import { Router } from "express";
-import { authenticate } from "../middleware/auth.middleware";
-import { requireRole } from "../middleware/role.middleware";
+import { authenticate } from "../middleware/auth.middleware.js";
+import { requireRole } from "../middleware/role.middleware.js";
 
 import {
   getAllComplaints,
   getComplaintDetails,
   getAllStaff,
-} from "../controllers/admin.complaint.controller";
+} from "../controllers/admin.complaint.controller.js";
 
-import { getDashboardStats } from "../controllers/admin.dashboard.controller";
+import { getDashboardStats } from "../controllers/admin.dashboard.controller.js";
 
 const router = Router();
 

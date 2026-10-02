@@ -8,32 +8,47 @@ import type {
   NearbyQuery,
 } from '../types/complaint';
 
-export interface DuplicateInfo {
-  detected: boolean;
-  similarityScore: number;
-  matchingComplaintId: string | null;
-  matchingComplaintSummary: string | null;
+/** An AI suggestion only; staff confirm duplicates before anything is linked. */
+export interface DuplicateSuggestion {
+  complaintId: string;
+  verdict: 'yes' | 'unsure';
   reason: string | null;
+  summary: string | null;
+  status: string | null;
+  confirmed: boolean;
 }
 
+export type AiSource = 'gemini' | 'cached' | 'seed' | 'fallback';
+
 export interface AIComplaintInfo {
+  source: AiSource | null;
+  needsManualReview: boolean;
+  summary: string | null;
+  wasteType: string | null;
+  wasteCategories: string[];
+  relativeVolume: string | null;
+  condition: string | null;
+  hazardousDetected: boolean;
+  hazardousTypes: string[];
+  accessibility: string | null;
+  suggestedEquipment: string[];
+  blockedRoad: boolean;
+  nearSensitiveSite: boolean;
+  confidence: number | null;
   priority: string;
   urgencyScore: number;
-  sentimentScore: number;
-  sentimentLabel: string;
-  highPriority: boolean;
-  wasteType: string | null;
-  locationDescription: string | null;
-  estimatedQuantity: string | null;
   requiredWorkers: number;
   requiredHeavyVehicles: number;
-  estimatedTimeMinutes: number;
+  estimatedTimeMinutes: number | null;
+  priorityReasons: string[];
 }
 
 export interface CreateComplaintResponse {
   complaint: Complaint;
-  duplicate: DuplicateInfo;
+  duplicateSuggestion: DuplicateSuggestion | null;
   ai: AIComplaintInfo;
+  /** true when this was a retry of an already-created complaint. */
+  idempotentReplay: boolean;
 }
 
 export async function createComplaint(
@@ -41,9 +56,8 @@ export async function createComplaint(
 ): Promise<CreateComplaintResponse> {
   const formData = new FormData();
 
-  // IMPORTANT:
-  // Backend expects "text", NOT "description".
-  formData.append('text', payload.description);
+  formData.append('description', payload.description);
+  formData.append('address', payload.address);
 
   formData.append('latitude', String(payload.latitude));
   formData.append('longitude', String(payload.longitude));
@@ -59,6 +73,7 @@ export async function createComplaint(
     {
       method: 'POST',
       formData,
+      headers: { 'Idempotency-Key': payload.idempotencyKey },
     },
   );
 
@@ -97,7 +112,8 @@ export async function getNearbyComplaints(
   const params = new URLSearchParams({
     latitude: String(query.latitude),
     longitude: String(query.longitude),
-    radius: String(query.radius),
+    // Backend expects metres.
+    radius: String(Math.round(query.radiusKm * 1000)),
   });
 
   const res = await apiRequest<ApiEnvelope<Complaint[]>>(
@@ -116,7 +132,9 @@ export interface Hotspot {
   longitude: number;
   complaintCount: number;
   totalVotes: number;
-  totalVerifiedWeightKg: number;
+  radiusMeters: number;
+  /** How many of the hotspot's complaints are seeded demo data. */
+  simulatedCount: number;
   score: number;
   level: HotspotLevel;
   complaintIds: string[];

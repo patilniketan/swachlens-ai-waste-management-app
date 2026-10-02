@@ -1,5 +1,6 @@
-import prisma from "../config/prisma";
-import { calculateDistance } from "../utils/distance";
+import prisma from "../config/prisma.js";
+import { calculateDistance } from "../utils/distance.js";
+import type { ComplaintStatus } from "../constants/complaint.js";
 
 export const assignComplaint = async ({
   complaintId,
@@ -153,10 +154,10 @@ export const updateAssignmentStatus = async (
     },
   });
 
-  let complaintStatus = "Assigned";
+  let complaintStatus: ComplaintStatus = "Assigned";
 
   if (status === "IN_PROGRESS") {
-    complaintStatus = "In Progress";
+    complaintStatus = "InProgress";
   }
 
   if (status === "COMPLETED") {
@@ -169,6 +170,7 @@ export const updateAssignmentStatus = async (
     },
     data: {
       status: complaintStatus,
+      resolvedAt: complaintStatus === "Resolved" ? new Date() : null,
     },
   });
 

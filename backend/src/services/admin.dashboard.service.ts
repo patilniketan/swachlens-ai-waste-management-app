@@ -1,4 +1,4 @@
-import prisma from "../config/prisma";
+import prisma from "../config/prisma.js";
 
 export const getDashboardStats = async () => {
   const [
@@ -25,7 +25,7 @@ export const getDashboardStats = async () => {
 
     prisma.complaint.count({
       where: {
-        status: "In Progress",
+        status: "InProgress",
       },
     }),
 

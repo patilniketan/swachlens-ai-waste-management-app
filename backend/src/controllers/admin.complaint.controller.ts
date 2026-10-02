@@ -1,6 +1,7 @@
 import type { Response } from "express";
-import type { AuthRequest } from "../middleware/auth.middleware";
-import * as adminComplaintService from "../services/admin.complaint.service";
+import type { AuthRequest } from "../middleware/auth.middleware.js";
+import * as adminComplaintService from "../services/admin.complaint.service.js";
+import { getParam } from "../utils/params.js";
 
 export const getAllComplaints = async (req: AuthRequest, res: Response) => {
   try {
@@ -22,7 +23,14 @@ export const getAllComplaints = async (req: AuthRequest, res: Response) => {
 
 export const getComplaintDetails = async (req: AuthRequest, res: Response) => {
   try {
-    const { id } = req.params;
+    const id = getParam(req.params.id);
+
+    if (!id) {
+      return res.status(400).json({
+        success: false,
+        message: "Complaint ID is required",
+      });
+    }
 
     const complaint = await adminComplaintService.getComplaintDetails(id);
 

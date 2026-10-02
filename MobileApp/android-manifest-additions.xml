@@ -28,3 +28,11 @@
 
   <uses-feature android:name="android.hardware.camera" android:required="false" />
 -->
+
+<!--
+  The demo backend is plain HTTP on a LAN IP (see src/constants/config.ts).
+  Debug builds already allow cleartext traffic. For a RELEASE build, add this
+  attribute to the <application> tag:
+
+  android:usesCleartextTraffic="true"
+-->

@@ -4,6 +4,7 @@ import { colors } from '../constants/colors';
 import { radius, shadow, spacing, typography } from '../constants/spacing';
 import { resolveImageUrl } from '../services/api';
 import StatusBadge from './StatusBadge';
+import SimulatedTag from './SimulatedTag';
 import type { Complaint } from '../types/complaint';
 
 interface Props {
@@ -52,6 +53,8 @@ export default function ComplaintCard({ complaint, onPress }: Props) {
         <Text style={styles.description} numberOfLines={2}>
           {complaint.description}
         </Text>
+
+        {complaint.isSimulated && <SimulatedTag />}
 
         <View style={styles.metaRow}>
           <Text style={styles.metaText} numberOfLines={1}>

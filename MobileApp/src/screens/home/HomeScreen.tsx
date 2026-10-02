@@ -47,7 +47,7 @@ export default function HomeScreen({ navigation }: Props) {
           setLocationLabel('Location detected');
           const nearby = await getNearbyComplaints({
             ...coords,
-            radius: NEARBY_DEFAULT_RADIUS_KM,
+            radiusKm: NEARBY_DEFAULT_RADIUS_KM,
           });
           setNearbyCount(nearby.length);
         } catch {

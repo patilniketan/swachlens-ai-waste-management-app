@@ -1,4 +1,5 @@
 import { apiClient } from "./client";
+import type { UserRole } from "../types";
 
 export interface LoginPayload {
   email: string;
@@ -8,7 +9,7 @@ export interface LoginPayload {
 export interface LoginUser {
   id: string;
   email: string;
-  role: string;
+  role: UserRole;
 }
 
 export interface LoginResponse {

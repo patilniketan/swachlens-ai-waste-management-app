@@ -1,6 +1,6 @@
 import type { Response } from "express";
-import type { AuthRequest } from "../middleware/auth.middleware";
-import * as adminDashboardService from "../services/admin.dashboard.service";
+import type { AuthRequest } from "../middleware/auth.middleware.js";
+import * as adminDashboardService from "../services/admin.dashboard.service.js";
 
 export const getDashboardStats = async (req: AuthRequest, res: Response) => {
   try {

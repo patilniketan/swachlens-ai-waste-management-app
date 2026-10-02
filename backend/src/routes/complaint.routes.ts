@@ -10,11 +10,12 @@ import {
   verifyComplaint,
   mergeComplaints,
   getTodaysTasks,
-} from "../controllers/complaint.controller";
+  confirmDuplicate,
+} from "../controllers/complaint.controller.js";
 
-import { authenticate } from "../middleware/auth.middleware";
-import { requireRole } from "../middleware/role.middleware";
-import { upload } from "../middleware/upload.middleware";
+import { authenticate } from "../middleware/auth.middleware.js";
+import { requireRole } from "../middleware/role.middleware.js";
+import { upload } from "../middleware/upload.middleware.js";
 
 const router = Router();
 
@@ -58,6 +59,14 @@ router.post(
   authenticate,
   requireRole("STAFF", "ADMIN"),
   verifyComplaint,
+);
+
+// Confirm the AI duplicate suggestion (links + vote) - STAFF and ADMIN only
+router.post(
+  "/:id/confirm-duplicate",
+  authenticate,
+  requireRole("STAFF", "ADMIN"),
+  confirmDuplicate,
 );
 
 export default router;

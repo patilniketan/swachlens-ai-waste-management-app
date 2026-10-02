@@ -52,7 +52,7 @@ import {
   stats,
   weekly,
 } from "./mocks/portalData";
-import type { Complaint, ComplaintStatus } from "./types";
+import { STATUS_LABELS, type Complaint, type ComplaintStatus } from "./types";
 
 const nav = [
   { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
@@ -61,17 +61,17 @@ const nav = [
   { to: "/staff", label: "Staff & tasks", icon: Users },
   { to: "/analytics", label: "Analytics", icon: BarChart3 },
 ];
-const statusClass: Record<ComplaintStatus, string> = {
+const statusClass: Partial<Record<ComplaintStatus, string>> = {
   Pending: "pending",
   Assigned: "assigned",
-  "In Progress": "progress",
+  InProgress: "progress",
   Resolved: "resolved",
 };
 function StatusBadge({ status }: { status: ComplaintStatus }) {
   return (
-    <span className={`badge ${statusClass[status]}`}>
+    <span className={`badge ${statusClass[status] ?? ""}`}>
       <i />
-      {status}
+      {STATUS_LABELS[status] ?? status}
     </span>
   );
 }
@@ -499,7 +499,7 @@ function Complaints() {
             <option>All</option>
             <option>Pending</option>
             <option>Assigned</option>
-            <option>In Progress</option>
+            <option value="InProgress">In Progress</option>
             <option>Resolved</option>
           </select>
         </label>
@@ -622,11 +622,13 @@ function Details() {
                   [
                     "Pending",
                     "Assigned",
-                    "In Progress",
+                    "InProgress",
                     "Resolved",
                   ] as ComplaintStatus[]
                 ).map((s) => (
-                  <option key={s}>{s}</option>
+                  <option key={s} value={s}>
+                    {STATUS_LABELS[s]}
+                  </option>
                 ))}
               </select>
             </label>

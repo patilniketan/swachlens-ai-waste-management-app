@@ -10,7 +10,9 @@
     "build": "tsc",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
-    "prisma:studio": "prisma studio"
+    "prisma:studio": "prisma studio",
+    "seed": "prisma db seed",
+    "gemini:smoke": "tsx scripts/gemini-smoke.ts"
   },
   "keywords": [],
   "author": "",

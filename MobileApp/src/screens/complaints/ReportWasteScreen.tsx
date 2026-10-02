@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   Alert,
   Image,
@@ -22,6 +22,7 @@ import Button from '../../components/Button';
 import { colors } from '../../constants/colors';
 import { radius, spacing, typography } from '../../constants/spacing';
 import type { Coordinates } from '../../types/complaint';
+import { generateUuid } from '../../utils/uuid';
 
 type Props = NativeStackScreenProps<HomeStackParamList, 'ReportWaste'>;
 
@@ -44,6 +45,9 @@ export default function ReportWasteScreen({ navigation }: Props) {
   const [formError, setFormError] = useState<string | null>(null);
 
   const [submitting, setSubmitting] = useState(false);
+  // One key per report: a retry after a timeout returns the complaint the
+  // server already created instead of creating a second one.
+  const idempotencyKeyRef = useRef<string | null>(null);
   const [location, setLocation] = useState<LocationState>({
     status: 'checking',
   });
@@ -181,15 +185,15 @@ export default function ReportWasteScreen({ navigation }: Props) {
       // ----------------------------------------------------------
       // Send complaint to backend
       // Backend performs:
-      // 1. Gemini extraction
-      // 2. Nearby complaint search
-      // 3. Gemini semantic duplicate detection
-      // 4. Priority analysis
-      // 5. Sentiment analysis
-      // 6. Duplicate linking
+      // 1. One AI analysis of photo + description
+      // 2. Nearby complaint search + AI duplicate suggestion
+      // 3. Rule-based priority from the analysed features
       // ----------------------------------------------------------
 
+      idempotencyKeyRef.current ??= generateUuid();
+
       const result = await createComplaint({
+        idempotencyKey: idempotencyKeyRef.current,
         description: description.trim(),
         address: address.trim(),
         latitude: location.coords.latitude,
@@ -200,50 +204,23 @@ export default function ReportWasteScreen({ navigation }: Props) {
       });
 
       // ----------------------------------------------------------
-      // AI DUPLICATE DETECTION RESULT
+      // AI DUPLICATE SUGGESTION
+      // The complaint is already saved; staff decide whether to link it.
       // ----------------------------------------------------------
 
-      if (result.duplicate?.detected) {
-        const similarity = Math.round(
-          (result.duplicate.similarityScore ?? 0) * 100,
-        );
+      const suggestion = result.duplicateSuggestion;
 
-        const summary =
-          result.duplicate.matchingComplaintSummary ??
-          'A similar complaint already exists nearby.';
-
-        const shouldContinue = await new Promise<boolean>(
-          (resolve) => {
-            Alert.alert(
-              'Similar Complaint Found',
-              `AI detected a similar complaint nearby.\n\n` +
-                `${summary}\n\n` +
-                `Similarity: ${similarity}%\n\n` +
-                `Would you still like to submit your complaint?`,
-              [
-                {
-                  text: 'Cancel',
-                  style: 'cancel',
-                  onPress: () => resolve(false),
-                },
-                {
-                  text: 'Submit Anyway',
-                  style: 'default',
-                  onPress: () => resolve(true),
-                },
-              ],
-              {
-                cancelable: false,
-              },
-            );
-          },
-        );
-
-        // Citizen cancelled submission
-        if (!shouldContinue) {
-          setSubmitting(false);
-          return;
-        }
+      if (suggestion) {
+        await new Promise<void>(resolve => {
+          Alert.alert(
+            'Possibly already reported',
+            `Your report was submitted. It may describe the same problem as a nearby report:\n\n` +
+              `${suggestion.summary ?? 'A similar complaint nearby.'}\n\n` +
+              `Staff will check and combine them if so, which adds your report as a vote.`,
+            [{ text: 'OK', onPress: () => resolve() }],
+            { cancelable: false },
+          );
+        });
       }
 
       // ----------------------------------------------------------

@@ -52,7 +52,7 @@ const DEFAULT_DELTA = {
   longitudeDelta: 0.08,
 };
 
-const HOTSPOT_RADIUS_METERS = 500;
+const DEFAULT_HOTSPOT_RADIUS_METERS = 500;
 
 function getLevelColor(level: HotspotLevel) {
   switch (level) {
@@ -240,13 +240,13 @@ export default function NearbyComplaintsScreen({
             <React.Fragment
               key={`${hotspot.latitude}-${hotspot.longitude}-${index}`}
             >
-              {/* 500m hotspot area */}
+              {/* hotspot clustering area */}
               <Circle
                 center={{
                   latitude: hotspot.latitude,
                   longitude: hotspot.longitude,
                 }}
-                radius={HOTSPOT_RADIUS_METERS}
+                radius={hotspot.radiusMeters ?? DEFAULT_HOTSPOT_RADIUS_METERS}
                 strokeWidth={2}
                 strokeColor={`${markerColor}80`}
                 fillColor={`${markerColor}20`}
@@ -309,15 +309,16 @@ export default function NearbyComplaintsScreen({
                       Votes: {hotspot.totalVotes}
                     </Text>
 
-                    <Text style={styles.calloutText}>
-                      Verified waste:{' '}
-                      {hotspot.totalVerifiedWeightKg} kg
-                    </Text>
-
                     {hotspot.wasteTypes?.length > 0 && (
                       <Text style={styles.calloutText}>
                         Waste:{' '}
                         {hotspot.wasteTypes.join(', ')}
+                      </Text>
+                    )}
+
+                    {hotspot.simulatedCount > 0 && (
+                      <Text style={styles.calloutText}>
+                        Simulated demo reports: {hotspot.simulatedCount}
                       </Text>
                     )}
 

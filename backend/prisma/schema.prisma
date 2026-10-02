@@ -8,70 +8,95 @@ datasource db {
 }
 
 model User {
-  id               String                @id @default(cuid())
-  email            String                @unique
+  id               String       @id @default(cuid())
+  email            String       @unique
   password         String?
-  isVerified       Boolean               @default(false)
-  otp              String?
+  isVerified       Boolean      @default(false)
+  // HMAC of the 6-digit code; the plain code is never stored.
+  otpHash          String?
   otpExpiresAt     DateTime?
-  createdAt        DateTime              @default(now())
-  updatedAt        DateTime              @updatedAt
-  role             String                @default("CITIZEN")
-  StaffAssignments Assignment[]          @relation("StaffAssignments")
+  otpAttempts      Int          @default(0)
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+  role             Role         @default(CITIZEN)
+  StaffAssignments Assignment[] @relation("StaffAssignments")
   Complaints       Complaint[]
-  BuyerInventory   RecyclableInventory[] @relation("InventoryBuyer")
 }
 
 model Complaint {
-  id                    String               @id @default(cuid())
-  userId                String
-  description           String
-  imageUrl              String?
-  latitude              Float
-  longitude             Float
-  address               String?
-  wasteType             String?
-  status                String               @default("Pending")
-  createdAt             DateTime             @default(now())
-  updatedAt             DateTime             @updatedAt
-  aiAccessibility       String?
-  aiHazardousDetected   Boolean              @default(false)
-  aiHazardousTypes      String[]             @default([])
-  aiImageConfidence     Float?
-  aiQualityIndicators   String[]             @default([])
-  aiRelativeVolume      String?
-  aiSuggestedEquipment  String[]             @default([])
-  aiSummary             String?
-  aiWasteCategories     String[]             @default([])
-  aiWasteCondition      String?
-  duplicateOfId         String?
-  duplicateSimilarity   Float?
-  estimatedQuantity     String?
-  estimatedTimeMinutes  Int?
-  isScheduled           Boolean              @default(false)
-  locationDescription   String?
-  masterComplaintId     String?
-  priority              String               @default("STANDARD")
-  requiredHeavyVehicles Int                  @default(0)
-  requiredWorkers       Int                  @default(1)
-  sentimentLabel        String?
-  sentimentScore        Float                @default(0.5)
-  urgencyScore          Int                  @default(1)
-  voteCount             Int                  @default(1)
-  assignments           Assignment[]
-  masterComplaint       Complaint?           @relation("ComplaintMaster", fields: [masterComplaintId], references: [id])
-  childComplaints       Complaint[]          @relation("ComplaintMaster")
-  User                  User                 @relation(fields: [userId], references: [id])
-  linkedComplaintLinks  ComplaintLink[]      @relation("LinkedComplaintLink")
-  masterComplaintLinks  ComplaintLink[]      @relation("MasterComplaintLink")
-  inventory             RecyclableInventory?
+  id                         String            @id @default(cuid())
+  userId                     String
+  description                String
+  imageUrl                   String?
+  latitude                   Float
+  longitude                  Float
+  address                    String?
+  wasteType                  String?
+  status                     ComplaintStatus   @default(Pending)
+  createdAt                  DateTime          @default(now())
+  updatedAt                  DateTime          @updatedAt
+  aiAccessibility            String?
+  aiHazardousDetected        Boolean           @default(false)
+  aiHazardousTypes           String[]          @default([])
+  aiImageConfidence          Float?
+  aiQualityIndicators        String[]          @default([])
+  aiRelativeVolume           String?
+  aiSuggestedEquipment       String[]          @default([])
+  aiSummary                  String?
+  aiWasteCategories          String[]          @default([])
+  aiWasteCondition           String?
+  aiBlockedRoad              Boolean           @default(false)
+  aiNearSensitiveSite        Boolean           @default(false)
+  estimatedQuantity          String?
+  estimatedTimeMinutes       Int?
+  isScheduled                Boolean           @default(false)
+  locationDescription        String?
+  masterComplaintId          String?
+  priority                   Priority          @default(STANDARD)
+  requiredHeavyVehicles      Int               @default(0)
+  requiredWorkers            Int               @default(1)
+  urgencyScore               Int               @default(1)
+  voteCount                  Int               @default(1)
+  verifiedAt                 DateTime?
+  verifiedBy                 String?
+  // Where the AI fields came from. "fallback" means analysis failed and the
+  // complaint is flagged with needsManualReview.
+  aiSource                   AiSource?
+  needsManualReview          Boolean           @default(false)
+  // Output of services/priority.service.ts: why it got its priority.
+  priorityReasons            String[]          @default([])
+  // Duplicate suggestion from the AI. Staff confirm it via
+  // POST /api/complaints/:id/confirm-duplicate; nothing is merged automatically.
+  duplicateSuggestionOfId    String?
+  duplicateSuggestionVerdict SameIssueVerdict?
+  duplicateSuggestionReason  String?
+  // Client-generated key so a retried submission returns the original complaint.
+  idempotencyKey             String?           @unique
+  // True for seeded demo data. UIs must label these records "simulated".
+  isSimulated                Boolean           @default(false)
+  // Filled in by field staff when the complaint is resolved.
+  verifiedWeightKg           Float?
+  afterImageUrl              String?
+  resolvedAt                 DateTime?
+  assignments                Assignment[]
+  masterComplaint            Complaint?        @relation("ComplaintMaster", fields: [masterComplaintId], references: [id])
+  childComplaints            Complaint[]       @relation("ComplaintMaster")
+  User                       User              @relation(fields: [userId], references: [id])
+  linkedComplaintLinks       ComplaintLink[]   @relation("LinkedComplaintLink")
+  masterComplaintLinks       ComplaintLink[]   @relation("MasterComplaintLink")
+
+  // Duplicate-candidate bounding-box lookup.
+  @@index([status, latitude, longitude])
 }
 
 model ComplaintLink {
   id                String    @id @default(cuid())
   masterComplaintId String
   linkedComplaintId String
-  similarityScore   Float
+  // Legacy score; links confirmed by staff carry a reason instead.
+  similarityScore   Float?
+  reason            String?
+  confirmedBy       String?
   createdAt         DateTime  @default(now())
   linkedComplaint   Complaint @relation("LinkedComplaintLink", fields: [linkedComplaintId], references: [id])
   masterComplaint   Complaint @relation("MasterComplaintLink", fields: [masterComplaintId], references: [id])
@@ -101,59 +126,39 @@ model Resource {
   updatedAt     DateTime @updatedAt
 }
 
-model RecyclableInventory {
-  id                 String              @id @default(cuid())
-  complaintId        String              @unique
-  aiPredictedType    String?
-  aiPredictedVolume  String?
-  aiConfidence       Float?
-  verifiedType       String?
-  verifiedWeightKg   Float?
-  verifiedVolumeCbm  Float?
-  qualityGrade       String?
-  contamination      String?
-  isAvailable        Boolean             @default(false)
-  pricePerKg         Float?
-  buyerId            String?
-  verificationStatus VerificationStatus  @default(PendingVerification)
-  verifiedBy         String?
-  verifiedAt         DateTime?
-  createdAt          DateTime            @default(now())
-  updatedAt          DateTime            @updatedAt
-  marketplaceListing MarketplaceListing?
-  buyer              User?               @relation("InventoryBuyer", fields: [buyerId], references: [id])
-  complaint          Complaint           @relation(fields: [complaintId], references: [id])
+enum Role {
+  CITIZEN
+  STAFF
+  ADMIN
 }
 
-model MarketplaceListing {
-  id               String              @id @default(cuid())
-  inventoryId      String              @unique
-  title            String
-  description      String
-  quantityKg       Float
-  wasteType        String
-  location         String
-  pricePerKg       Float
-  totalPrice       Float
-  images           String[]
-  status           ListingStatus       @default(Active)
-  views            Int                 @default(0)
-  interestedBuyers String[]            @default([])
-  createdAt        DateTime            @default(now())
-  expiresAt        DateTime
-  inventory        RecyclableInventory @relation(fields: [inventoryId], references: [id])
-}
-
-enum VerificationStatus {
-  PendingVerification
-  Verified
-  Rejected
-  Sold
-}
-
-enum ListingStatus {
-  Active
+// Keep ACTIVE_STATUSES in src/constants/complaint.ts in sync with this enum.
+enum ComplaintStatus {
   Pending
-  Sold
-  Expired
+  Assigned
+  InProgress
+  Resolved
+  Linked
+  Merged
+  Rejected
+}
+
+// Declaration order matters: ORDER BY priority ASC puts CRITICAL first.
+enum Priority {
+  CRITICAL
+  STANDARD
+  TRIVIAL
+}
+
+enum AiSource {
+  gemini
+  cached
+  seed
+  fallback
+}
+
+enum SameIssueVerdict {
+  yes
+  no
+  unsure
 }

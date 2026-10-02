@@ -8,13 +8,18 @@ import { resolveImageUrl } from '../../services/api';
 import Loading from '../../components/Loading';
 import EmptyState from '../../components/EmptyState';
 import StatusBadge from '../../components/StatusBadge';
+import SimulatedTag from '../../components/SimulatedTag';
 import { colors } from '../../constants/colors';
 import { radius, shadow, spacing, typography } from '../../constants/spacing';
-import type { Complaint, ComplaintStatus } from '../../types/complaint';
+import {
+  STATUS_LABELS,
+  type Complaint,
+  type ComplaintStatus,
+} from '../../types/complaint';
 
 type Props = NativeStackScreenProps<ComplaintsStackParamList, 'ComplaintDetails'>;
 
-const STAGES: ComplaintStatus[] = ['Pending', 'Assigned', 'In Progress', 'Resolved'];
+const STAGES: ComplaintStatus[] = ['Pending', 'Assigned', 'InProgress', 'Resolved'];
 
 function formatDateTime(iso: string): string {
   try {
@@ -88,6 +93,7 @@ export default function ComplaintDetailsScreen({ route }: Props) {
           <StatusBadge status={complaint.status} />
         </View>
         <Text style={styles.idText}>Complaint #{complaint.id.slice(0, 8)}</Text>
+        {complaint.isSimulated && <SimulatedTag />}
 
         <Text style={styles.sectionLabel}>Description</Text>
         <Text style={styles.bodyText}>{complaint.description}</Text>
@@ -134,7 +140,7 @@ export default function ComplaintDetailsScreen({ route }: Props) {
                 <Text
                   style={[styles.timelineLabel, isComplete && styles.timelineLabelActive]}
                 >
-                  {stage}
+                  {STATUS_LABELS[stage]}
                 </Text>
               </View>
             );

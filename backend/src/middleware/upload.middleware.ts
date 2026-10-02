@@ -1,8 +1,9 @@
 import multer from "multer";
 import path from "path";
 import fs from "fs";
+import { UPLOAD_DIR } from "../config/uploads.js";
 
-const uploadDir = path.join(process.cwd(), "src", "uploads");
+const uploadDir = UPLOAD_DIR;
 
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
@@ -28,7 +29,12 @@ const fileFilter: multer.Options["fileFilter"] = (_req, file, cb) => {
   if (allowedTypes.includes(file.mimetype)) {
     cb(null, true);
   } else {
-    cb(new Error("Only JPEG, PNG, JPG and WebP images are allowed"));
+    cb(
+      Object.assign(
+        new Error("Only JPEG, PNG, JPG and WebP images are allowed"),
+        { status: 400 },
+      ),
+    );
   }
 };
 

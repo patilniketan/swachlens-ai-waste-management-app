@@ -29,6 +29,8 @@ interface ApiRequestOptions {
   body?: unknown;
   formData?: FormData;
   authenticated?: boolean;
+  /** Extra request headers, e.g. Idempotency-Key. */
+  headers?: Record<string, string>;
   /**
    * Called when the server responds 401. Defaults to clearing the stored
    * session so the app can redirect to Login. Screens can pass a custom
@@ -90,10 +92,12 @@ export async function apiRequest<T = unknown>(
     formData,
     authenticated = true,
     onUnauthorized,
+    headers: extraHeaders,
   } = options;
 
   const headers: Record<string, string> = {
     Accept: 'application/json',
+    ...extraHeaders,
   };
 
   if (!formData) {

@@ -1,6 +1,7 @@
 import type { Response } from "express";
-import type { AuthRequest } from "../middleware/auth.middleware";
-import * as assignmentService from "../services/assignment.service";
+import type { AuthRequest } from "../middleware/auth.middleware.js";
+import * as assignmentService from "../services/assignment.service.js";
+import { getParam } from "../utils/params.js";
 
 export const assignComplaint = async (req: AuthRequest, res: Response) => {
   try {
@@ -91,8 +92,15 @@ export const updateAssignmentStatus = async (
       });
     }
 
-    const { id } = req.params;
-    const { status } = req.body;
+    const id = getParam(req.params.id);
+    const { status } = req.body ?? {};
+
+    if (!id) {
+      return res.status(400).json({
+        success: false,
+        message: "Assignment ID is required",
+      });
+    }
 
     if (!status) {
       return res.status(400).json({
@@ -134,7 +142,14 @@ export const getStaffTaskById = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    const { id } = req.params;
+    const id = getParam(req.params.id);
+
+    if (!id) {
+      return res.status(400).json({
+        success: false,
+        message: "Assignment ID is required",
+      });
+    }
 
     const task = await assignmentService.getStaffTaskById(id, req.userId);
 

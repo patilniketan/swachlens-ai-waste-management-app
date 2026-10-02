@@ -10,9 +10,13 @@ import {
 } from 'react-native';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { AuthStackParamList } from '../../navigation/AuthNavigator';
-import { requestSignupOtp, verifySignupOtp } from '../../services/auth';
+import { requestSignupOtp, signup, verifySignupOtp } from '../../services/auth';
 import { ApiError } from '../../services/api';
-import { validateEmail, validateOtp } from '../../utils/validation';
+import {
+  validateEmail,
+  validateOtp,
+  validatePassword,
+} from '../../utils/validation';
 import Input from '../../components/Input';
 import Button from '../../components/Button';
 import { colors } from '../../constants/colors';
@@ -24,22 +28,45 @@ type Step = 'email' | 'otp';
 export default function SignupScreen({ navigation }: Props) {
   const [step, setStep] = useState<Step>('email');
   const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [otp, setOtp] = useState('');
   const [emailError, setEmailError] = useState<string | null>(null);
+  const [passwordError, setPasswordError] = useState<string | null>(null);
   const [otpError, setOtpError] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  const handleRequestOtp = async () => {
-    const err = validateEmail(email);
-    setEmailError(err);
+  const handleSignup = async () => {
+    const emailErr = validateEmail(email);
+    const passwordErr = validatePassword(password);
+    setEmailError(emailErr);
+    setPasswordError(passwordErr);
     setFormError(null);
-    if (err) return;
+    if (emailErr || passwordErr) return;
 
     setSubmitting(true);
     try {
+      const result = await signup({ email: email.trim(), password });
+      if (result.requiresVerification) {
+        setStep('otp');
+      } else {
+        // DEMO_MODE: the account is already verified.
+        navigation.replace('Login');
+      }
+    } catch (e) {
+      setFormError(
+        e instanceof ApiError ? e.message : 'Could not create your account. Please try again.',
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleResendOtp = async () => {
+    setFormError(null);
+    setSubmitting(true);
+    try {
       await requestSignupOtp({ email: email.trim() });
-      setStep('otp');
     } catch (e) {
       setFormError(e instanceof ApiError ? e.message : 'Could not send OTP. Please try again.');
     } finally {
@@ -77,7 +104,7 @@ export default function SignupScreen({ navigation }: Props) {
           <Text style={styles.heading}>Create your account</Text>
           <Text style={styles.subheading}>
             {step === 'email'
-              ? "We'll send a one-time code to verify your email."
+              ? "Create a password. We may send a one-time code to verify your email."
               : `Enter the code we sent to ${email.trim()}`}
           </Text>
         </View>
@@ -95,8 +122,18 @@ export default function SignupScreen({ navigation }: Props) {
                 onChangeText={setEmail}
                 error={emailError}
               />
+              <Input
+                label="Password"
+                placeholder="At least 6 characters"
+                secureToggle
+                secureTextEntry
+                autoCapitalize="none"
+                value={password}
+                onChangeText={setPassword}
+                error={passwordError}
+              />
               {!!formError && <ErrorBox message={formError} />}
-              <Button label="Send OTP" onPress={handleRequestOtp} loading={submitting} />
+              <Button label="Create account" onPress={handleSignup} loading={submitting} />
             </>
           ) : (
             <>
@@ -113,7 +150,7 @@ export default function SignupScreen({ navigation }: Props) {
               <Button label="Verify & Continue" onPress={handleVerifyOtp} loading={submitting} />
               <TouchableOpacity
                 style={styles.resendLink}
-                onPress={handleRequestOtp}
+                onPress={handleResendOtp}
                 disabled={submitting}
               >
                 <Text style={styles.resendText}>Didn't get a code? Resend</Text>

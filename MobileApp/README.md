@@ -1,3 +1,22 @@
+# Connecting to the backend
+
+The API address is set in one place: `API_HOST_OVERRIDE` in [`src/constants/config.ts`](src/constants/config.ts).
+
+| Where the app runs | What to set |
+| --- | --- |
+| Android emulator | leave `null` (uses `http://10.0.2.2:5000`) |
+| iOS simulator | leave `null` (uses `http://localhost:5000`) |
+| Physical phone | `'http://<your-computer-LAN-IP>:5000'` |
+
+For a physical phone (the usual setup for a live demo):
+
+1. Put the phone and the computer running the backend on the same Wi-Fi network.
+2. Find the computer's LAN IP: run `ipconfig` on Windows and read the "IPv4 Address" (for example `192.168.1.42`), or run `ipconfig getifaddr en0` on macOS.
+3. Set `const API_HOST_OVERRIDE: string | null = 'http://192.168.1.42:5000';` and reload the app.
+4. Check that the phone can reach the backend by opening `http://192.168.1.42:5000/api/health` in the phone's browser. If it doesn't load, allow Node.js through the Windows firewall on Private networks.
+
+Debug builds allow plain HTTP. Release builds on Android also need `android:usesCleartextTraffic="true"` on `<application>` (see `android-manifest-additions.xml`).
+
 This is a new [**React Native**](https://reactnative.dev) project, bootstrapped using [`@react-native-community/cli`](https://github.com/react-native-community/cli).
 
 # Getting Started
