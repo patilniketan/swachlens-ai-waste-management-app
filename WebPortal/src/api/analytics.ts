@@ -1,5 +1,5 @@
 import { apiClient, unwrap } from "./client";
-import type { Analytics, DailyPlan, DashboardStats } from "../types";
+import type { Analytics, DailyPlan, DashboardStats, EvalResults } from "../types";
 
 export const getDashboardStats = () =>
   unwrap<DashboardStats>(apiClient.get("/admin/dashboard"));
@@ -23,6 +23,9 @@ export const downloadComplaintsCsv = async (includeSimulated: boolean) => {
   link.remove();
   URL.revokeObjectURL(url);
 };
+
+// Latest offline evaluation, or null when `npm run eval` has not been run.
+export const getEvaluation = () => unwrap<EvalResults | null>(apiClient.get("/admin/eval/latest"));
 
 // ---------------- Daily plan ----------------
 

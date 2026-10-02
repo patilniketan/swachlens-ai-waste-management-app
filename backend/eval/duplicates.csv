@@ -1,0 +1,6 @@
+textA,textB,distanceMeters,isDuplicate
+"[EXAMPLE] Overflowing bins behind the Central Market, garbage all over the lane","Garbage bins near the back lane of Central Market are overflowing onto the road",40,true
+"[EXAMPLE] Pile of construction rubble blocking the road near the park gate","Plastic bottles littered around the bus stop",120,false
+"[EXAMPLE] Dead animal lying near the school entrance","Someone dumped a dead dog by the school gate and it smells",15,true
+"[EXAMPLE] Broken glass bottles on the footpath outside the liquor shop","Glass pieces scattered on the pavement in front of the wine shop",30,true
+"[EXAMPLE] Leaves and branches piled on the footpath after the storm","Overflowing garbage bin next to the temple",300,false

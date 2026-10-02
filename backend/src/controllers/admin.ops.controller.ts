@@ -7,6 +7,7 @@ import { getComplaintEvents } from "../services/event.service.js";
 import { getParam } from "../utils/params.js";
 import { sendError } from "../utils/httpError.js";
 import { analyticsQuerySchema } from "../validation/schemas.js";
+import { readLatestResults } from "../eval/results.js";
 import type { Priority } from "../generated/prisma/client.js";
 
 // ============================================================
@@ -142,5 +143,23 @@ export const exportCsv = async (req: AuthRequest, res: Response) => {
     }
 
     return sendError(res, error, "CSV EXPORT", "Failed to export complaints");
+  }
+};
+
+// ============================================================
+// EVALUATION (written by `npm run eval`)
+// ============================================================
+
+export const getEvaluation = async (_req: AuthRequest, res: Response) => {
+  try {
+    const results = await readLatestResults();
+
+    return res.json({
+      success: true,
+      data: results,
+      ...(!results && { message: "Not evaluated yet." }),
+    });
+  } catch (error) {
+    return sendError(res, error, "EVALUATION", "Failed to read evaluation results");
   }
 };

@@ -1,12 +1,75 @@
 import { useState } from "react";
 import { CheckCircle2, Clock, Download, GitMerge, Scale } from "lucide-react";
 import { Bar, BarChart, Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { downloadComplaintsCsv, getAnalytics } from "../api/analytics";
+import { downloadComplaintsCsv, getAnalytics, getEvaluation } from "../api/analytics";
 import { errorMessage } from "../api/client";
 import { Async, Button, ChartCard, PageTitle, Stat } from "../components/ui";
 import { useAsync } from "../hooks/useAsync";
-import { STATUS_LABELS } from "../types";
+import { STATUS_LABELS, type EvalResults } from "../types";
 import { formatDateTime, percent } from "../utils/format";
+
+const pct = (value: number | null) => (value === null ? "n/a" : `${Math.round(value * 100)}%`);
+
+// Offline evaluation of the AI against hand-labelled data (`npm run eval`).
+function EvaluationCard() {
+  // Wrapped: "not evaluated yet" is a real null, not "still loading".
+  const evaluation = useAsync(async () => ({ latest: await getEvaluation() }), []);
+
+  return (
+    <ChartCard title="Evaluation" sub="AI checked against hand-labelled examples (backend: npm run eval)">
+      <Async state={evaluation} loadingLabel="Loading evaluation…">
+        {({ latest }: { latest: EvalResults | null }) =>
+          !latest ? (
+            <p className="muted-line pad">Not evaluated yet.</p>
+          ) : (
+            <div className="eval-card">
+              <p className="muted-line">
+                Run {formatDateTime(latest.generatedAt)} · model {latest.model}
+              </p>
+              {(!latest.statisticallyMeaningful || latest.includesExamples) && (
+                <p className="warn-line">
+                  {!latest.statisticallyMeaningful && "Fewer than 20 labelled rows: not statistically meaningful. "}
+                  {latest.includesExamples && "Includes example rows, not real labels."}
+                </p>
+              )}
+              <table className="plain-table">
+                <thead>
+                  <tr>
+                    <th>Task</th>
+                    <th>N evaluated</th>
+                    <th>Result</th>
+                    <th>Failed calls</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {latest.duplicates && (
+                    <tr>
+                      <td>Duplicate detection</td>
+                      <td>{latest.duplicates.evaluated}</td>
+                      <td>
+                        precision {pct(latest.duplicates.precision)} · recall {pct(latest.duplicates.recall)} · F1{" "}
+                        {pct(latest.duplicates.f1)}
+                      </td>
+                      <td>{latest.duplicates.failed}</td>
+                    </tr>
+                  )}
+                  {latest.priority && (
+                    <tr>
+                      <td>Priority</td>
+                      <td>{latest.priority.evaluated}</td>
+                      <td>accuracy {pct(latest.priority.accuracy)}</td>
+                      <td>{latest.priority.failed}</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          )
+        }
+      </Async>
+    </ChartCard>
+  );
+}
 
 const PALETTE = ["#1F5D4C", "#5F8B7A", "#D97D34", "#A38663", "#B8C7BF", "#33648C", "#7A4FB5", "#B8862B"];
 
@@ -196,6 +259,8 @@ export function Analytics() {
                   table shows how those labels compare with what staff actually weighed.
                 </p>
               </ChartCard>
+
+              <EvaluationCard />
             </>
           );
         }}

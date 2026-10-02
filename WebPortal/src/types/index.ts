@@ -287,3 +287,28 @@ export interface DashboardStats {
   };
   staff: { total: number };
 }
+
+// Written by `npm run eval` in backend/ (GET /admin/eval/latest).
+export interface EvalResults {
+  generatedAt: string;
+  model: string;
+  includesExamples: boolean;
+  statisticallyMeaningful: boolean;
+  warnings: string[];
+  duplicates: {
+    evaluated: number;
+    failed: number;
+    unsure: number;
+    precision: number | null;
+    recall: number | null;
+    f1: number | null;
+    meanLatencyMs: number | null;
+  } | null;
+  priority: {
+    evaluated: number;
+    failed: number;
+    accuracy: number | null;
+    meanLatencyMs: number | null;
+  } | null;
+}
+

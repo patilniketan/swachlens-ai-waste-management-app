@@ -64,6 +64,20 @@ The plan never exceeds capacity. If already-assigned work alone exceeds it, the 
 
 **Completing a task.** Staff send `PATCH /api/assignments/:id/status` as multipart with `status=COMPLETED`, `verifiedWeightKg`, optional `resolutionNotes`, and the after photo in the `afterImage` field. Tasks only move forward: ASSIGNED, then IN_PROGRESS, then COMPLETED.
 
+## Evaluating the AI
+
+`npm run eval` in `backend/` scores the **real** Gemini duplicate judge and the analysis + priority scorer against hand-labelled rows in [`backend/eval/`](backend/eval/README.md). It reports:
+- duplicate precision, recall and F1
+- a priority confusion matrix and accuracy
+- mean latency per AI call
+
+Results go to `backend/eval/results.json`, which the portal's Analytics page shows as an "Evaluation" card.
+
+- The `[EXAMPLE]` rows only show the format; they are skipped unless you pass `--include-examples`.
+- Fewer than 20 evaluated rows is flagged as not statistically meaningful.
+- Failed AI calls are reported and left out of the metrics, never counted as predictions. A run with no successful calls doesn't write a results file.
+- It needs a working `GEMINI_API_KEY`; the demo cache is never used.
+
 ## Security defaults
 
 - **Who can read what.** Citizens can read only their own complaints (others return 404) and never see reporter emails or staff IDs. `/nearby` and `/hotspots` return no user identifiers. Changing or verifying a complaint requires STAFF or ADMIN.

@@ -12,7 +12,8 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
     "seed": "prisma db seed",
-    "gemini:smoke": "tsx scripts/gemini-smoke.ts"
+    "gemini:smoke": "tsx scripts/gemini-smoke.ts",
+    "eval": "tsx scripts/eval.ts"
   },
   "keywords": [],
   "author": "",

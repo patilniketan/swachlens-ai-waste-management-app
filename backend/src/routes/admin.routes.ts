@@ -17,6 +17,7 @@ import {
   exportCsv,
   generatePlan,
   getAnalytics,
+  getEvaluation,
   getEvents,
   getTodayPlan,
   overridePriority,
@@ -56,5 +57,8 @@ router.get("/plan/today", getTodayPlan);
 // Aggregates (?includeSimulated=false for real data only)
 router.get("/analytics", getAnalytics);
 router.get("/reports/export.csv", exportCsv);
+
+// Latest offline evaluation (eval/results.json), or null
+router.get("/eval/latest", getEvaluation);
 
 export default router;
