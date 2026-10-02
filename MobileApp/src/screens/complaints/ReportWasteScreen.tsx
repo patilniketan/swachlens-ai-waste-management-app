@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  Alert,
   Image,
   KeyboardAvoidingView,
   Platform,
@@ -157,17 +156,15 @@ export default function ReportWasteScreen({ navigation }: Props) {
   const handleSubmit = async () => {
     const descError = validateDescription(description);
     const addrError = validateAddress(address);
-    const imgError = !image
-      ? 'Please add a photo of the waste.'
-      : null;
 
     setDescriptionError(descError);
     setAddressError(addrError);
-    setImageError(imgError);
+    setImageError(null);
     setFormError(null);
 
-    // Stop if normal validation fails
-    if (descError || addrError || imgError) {
+    // A photo is optional (the backend accepts text-only reports), but it
+    // gives a much better AI assessment, so the UI encourages it.
+    if (descError || addrError) {
       return;
     }
 
@@ -198,38 +195,19 @@ export default function ReportWasteScreen({ navigation }: Props) {
         address: address.trim(),
         latitude: location.coords.latitude,
         longitude: location.coords.longitude,
-        imageUri: image!.uri!,
-        imageName: image!.fileName ?? 'complaint.jpg',
-        imageType: image!.type ?? 'image/jpeg',
+        ...(image?.uri && {
+          imageUri: image.uri,
+          imageName: image.fileName ?? 'complaint.jpg',
+          imageType: image.type ?? 'image/jpeg',
+        }),
       });
 
       // ----------------------------------------------------------
-      // AI DUPLICATE SUGGESTION
-      // The complaint is already saved; staff decide whether to link it.
+      // SUCCESS: show what the AI made of it (incl. any duplicate
+      // suggestion; the complaint is saved either way).
       // ----------------------------------------------------------
 
-      const suggestion = result.duplicateSuggestion;
-
-      if (suggestion) {
-        await new Promise<void>(resolve => {
-          Alert.alert(
-            'Possibly already reported',
-            `Your report was submitted. It may describe the same problem as a nearby report:\n\n` +
-              `${suggestion.summary ?? 'A similar complaint nearby.'}\n\n` +
-              `Staff will check and combine them if so, which adds your report as a vote.`,
-            [{ text: 'OK', onPress: () => resolve() }],
-            { cancelable: false },
-          );
-        });
-      }
-
-      // ----------------------------------------------------------
-      // SUCCESS
-      // ----------------------------------------------------------
-
-      navigation.replace('ComplaintDetails', {
-        id: result.complaint.id,
-      });
+      navigation.replace('SubmissionResult', { result });
     } catch (e) {
       setFormError(
         e instanceof ApiError
@@ -261,8 +239,15 @@ export default function ReportWasteScreen({ navigation }: Props) {
         ====================================================== */}
 
         <Text style={styles.sectionLabel}>
-          1. Photo
+          1. Photo (recommended)
         </Text>
+
+        {!image && (
+          <Text style={styles.hintText}>
+            Optional, but a photo lets the AI judge the type, size and hazards much
+            more accurately.
+          </Text>
+        )}
 
         {image ? (
           <View style={styles.previewWrapper}>
@@ -688,6 +673,12 @@ const styles = StyleSheet.create({
     ...typography.caption,
     color: colors.danger,
     marginTop: spacing.xs,
+  },
+
+  hintText: {
+    ...typography.caption,
+    color: colors.textSecondary,
+    marginBottom: spacing.sm,
   },
 
   formErrorBox: {

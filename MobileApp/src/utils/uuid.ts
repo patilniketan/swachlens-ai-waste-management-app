@@ -4,9 +4,11 @@
  * only has to be unique per submission, not secret.
  */
 export function generateUuid(): string {
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, char => {
-    const random = (Math.random() * 16) | 0;
-    const value = char === 'x' ? random : (random & 0x3) | 0x8;
-    return value.toString(16);
-  });
+  const hex = (max: number, offset = 0) =>
+    (offset + Math.floor(Math.random() * max)).toString(16);
+
+  // x: any hex digit; y: 8, 9, a or b (RFC 4122 variant).
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, char =>
+    char === 'x' ? hex(16) : hex(4, 8),
+  );
 }

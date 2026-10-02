@@ -697,53 +697,99 @@ export const getUserComplaints = async (
 // ids cannot be probed); staff and admins can read any, with reporter info.
 // ============================================================
 
+// Event types a citizen sees in their own timeline. Internal decisions
+// (priority overrides, dismissed duplicate suggestions) are left out.
+const CITIZEN_EVENT_TYPES = [
+  "CREATED",
+  "STATUS_CHANGED",
+  "ASSIGNED",
+  "DUPLICATE_CONFIRMED",
+  "MERGED",
+] as const;
+
+type TimelineEvent = {
+  type: string;
+  fromValue: string | null;
+  toValue: string | null;
+  reason: string | null;
+  createdAt: Date;
+  actor?: { id: string; email: string; role: string } | null;
+};
+
+// No actors, no staff emails; only the completion note keeps its text.
+const toCitizenTimeline = (events: TimelineEvent[]) =>
+  events
+    .filter((event) =>
+      (CITIZEN_EVENT_TYPES as readonly string[]).includes(event.type),
+    )
+    .map((event) => ({
+      type: event.type,
+      fromValue: event.fromValue,
+      toValue: event.type === "ASSIGNED" ? null : event.toValue,
+      reason:
+        event.type === "STATUS_CHANGED" && event.toValue === "Resolved"
+          ? event.reason
+          : null,
+      createdAt: event.createdAt,
+    }));
+
 export const getComplaintById = async (
   complaintId: string,
   viewer: { userId: string; role: string | undefined },
 ) => {
   const isStaff = viewer.role === "STAFF" || viewer.role === "ADMIN";
 
-  const complaint = await prisma.complaint.findUnique({
-    where: {
-      id: complaintId,
-    },
-
-    include: {
-      User: {
-        select: {
-          id: true,
-          email: true,
-          role: true,
-        },
+  // In parallel: each database round trip is the expensive part.
+  const [complaint, events] = await Promise.all([
+    prisma.complaint.findUnique({
+      where: {
+        id: complaintId,
       },
 
-      assignments: isStaff ? true : { select: citizenAssignmentSelect },
+      include: {
+        User: {
+          select: {
+            id: true,
+            email: true,
+            role: true,
+          },
+        },
 
-      childComplaints: {
-        select: {
-          id: true,
-          description: true,
-          status: true,
-          voteCount: true,
-          createdAt: true,
+        assignments: isStaff ? true : { select: citizenAssignmentSelect },
+
+        childComplaints: {
+          select: {
+            id: true,
+            description: true,
+            status: true,
+            voteCount: true,
+            createdAt: true,
+          },
         },
       },
-    },
-  });
+    }),
+    prisma.complaintEvent.findMany({
+      where: { complaintId },
+      orderBy: { createdAt: "asc" },
+      include: {
+        actor: { select: { id: true, email: true, role: true } },
+      },
+    }),
+  ]);
 
   if (!complaint) {
     throw new HttpError(404, "Complaint not found");
   }
 
   if (isStaff) {
-    return complaint;
+    return { ...complaint, timeline: events };
   }
 
   if (complaint.userId !== viewer.userId) {
     throw new HttpError(404, "Complaint not found");
   }
 
-  return toCitizenView(complaint);
+  return { ...toCitizenView(complaint), timeline: toCitizenTimeline(events) };
 };
 
 // ============================================================

@@ -62,11 +62,13 @@ export async function createComplaint(
   formData.append('latitude', String(payload.latitude));
   formData.append('longitude', String(payload.longitude));
 
-  formData.append('image', {
-    uri: payload.imageUri,
-    name: payload.imageName ?? 'complaint.jpg',
-    type: payload.imageType ?? 'image/jpeg',
-  } as any);
+  if (payload.imageUri) {
+    formData.append('image', {
+      uri: payload.imageUri,
+      name: payload.imageName ?? 'complaint.jpg',
+      type: payload.imageType ?? 'image/jpeg',
+    } as any);
+  }
 
   const res = await apiRequest<ApiEnvelope<CreateComplaintResponse>>(
     '/complaints',

@@ -26,6 +26,22 @@ export const STATUS_LABELS: Record<ComplaintStatus, string> = {
 
 export type ComplaintPriority = 'CRITICAL' | 'STANDARD' | 'TRIVIAL';
 
+export type TimelineEventType =
+  | 'CREATED'
+  | 'STATUS_CHANGED'
+  | 'ASSIGNED'
+  | 'DUPLICATE_CONFIRMED'
+  | 'MERGED';
+
+/** One entry of a complaint's history (GET /complaints/:id `timeline`). */
+export interface TimelineEvent {
+  type: TimelineEventType;
+  fromValue: string | null;
+  toValue: string | null;
+  reason: string | null;
+  createdAt: string;
+}
+
 export interface Complaint {
   id: string;
   /** Only present on your own complaints; nearby results omit reporter ids. */
@@ -44,6 +60,14 @@ export interface Complaint {
   /** AI analysis failed; staff will review it manually. */
   needsManualReview?: boolean;
   priorityReasons?: string[];
+  masterComplaintId?: string | null;
+  /** Resolution evidence, set when field staff complete the work. */
+  afterImageUrl?: string | null;
+  verifiedWeightKg?: number | null;
+  resolutionNotes?: string | null;
+  resolvedAt?: string | null;
+  /** Only on GET /complaints/:id. */
+  timeline?: TimelineEvent[];
   createdAt: string;
   updatedAt: string;
   distanceKm?: number; // present on /nearby responses when backend supplies it
@@ -56,7 +80,8 @@ export interface CreateComplaintPayload {
   latitude: number;
   longitude: number;
   address: string;
-  imageUri: string;
+  /** Optional: the backend accepts reports without a photo. */
+  imageUri?: string;
   imageName?: string;
   imageType?: string;
 }
