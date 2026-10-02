@@ -1,30 +1,7 @@
 import type { Request, Response } from "express";
 import * as authService from "../services/auth.service.js";
 import { type AuthRequest } from "../middleware/auth.middleware.js";
-import { HttpError } from "../utils/httpError.js";
-
-// Only HttpError messages are shown to clients; anything else is logged
-// and replaced with a generic message.
-const sendError = (
-  res: Response,
-  error: unknown,
-  label: string,
-  fallbackMessage: string,
-) => {
-  if (error instanceof HttpError) {
-    return res.status(error.status).json({
-      success: false,
-      message: error.message,
-    });
-  }
-
-  console.error(`${label} ERROR:`, error);
-
-  return res.status(500).json({
-    success: false,
-    message: fallbackMessage,
-  });
-};
+import { sendError } from "../utils/httpError.js";
 
 export const signup = async (req: Request, res: Response) => {
   try {

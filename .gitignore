@@ -47,3 +47,5 @@ backend/uploads/*
 
 # Coverage
 coverage/
+# TypeScript incremental build cache
+*.tsbuildinfo

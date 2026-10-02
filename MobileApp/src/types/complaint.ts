@@ -28,7 +28,8 @@ export type ComplaintPriority = 'CRITICAL' | 'STANDARD' | 'TRIVIAL';
 
 export interface Complaint {
   id: string;
-  userId: string;
+  /** Only present on your own complaints; nearby results omit reporter ids. */
+  userId?: string;
   description: string;
   imageUrl: string | null;
   latitude: number;

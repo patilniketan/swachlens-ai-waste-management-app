@@ -88,9 +88,7 @@ function getLevelLabel(level: HotspotLevel) {
   }
 }
 
-export default function NearbyComplaintsScreen({
-  navigation,
-}: Props) {
+export default function NearbyComplaintsScreen(_props: Props) {
   const [state, setState] = useState<ViewState>({
     status: 'loading',
   });
@@ -260,19 +258,6 @@ export default function NearbyComplaintsScreen({
                 }}
                 pinColor={markerColor}
                 tracksViewChanges={false}
-                onCalloutPress={() => {
-                  const firstComplaintId =
-                    hotspot.complaintIds?.[0];
-
-                  if (firstComplaintId) {
-                    navigation.navigate(
-                      'ComplaintDetails',
-                      {
-                        id: firstComplaintId,
-                      },
-                    );
-                  }
-                }}
               >
                 <View
                   style={[
@@ -322,8 +307,10 @@ export default function NearbyComplaintsScreen({
                       </Text>
                     )}
 
+                    {/* Citizens can only open their own complaints, so the
+                        callout is informational. */}
                     <Text style={styles.calloutHint}>
-                      Tap to view a complaint
+                      Reports in this area
                     </Text>
                   </View>
                 </Callout>

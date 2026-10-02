@@ -7,12 +7,11 @@ import {
   type DuplicateCandidate,
   type DuplicateJudgment,
 } from "./ai.service.js";
-import {
-  priorityFeaturesFromComplaint,
-  scorePriority,
-} from "./priority.service.js";
+import { rescoreComplaint, scorePriority } from "./priority.service.js";
+import { recordEvents, statusChangeEvent } from "./event.service.js";
 import { calculateDistance } from "../utils/distance.js";
 import { HttpError } from "../utils/httpError.js";
+import { getTodayPlan } from "./plan.service.js";
 import {
   ACTIVE_STATUSES,
   COMPLAINT_STATUSES,
@@ -329,6 +328,15 @@ export const createComplaint = async ({
     duplicateSuggestionReason: suggestion?.reason ?? null,
 
     idempotencyKey: idempotencyKey ?? null,
+
+    events: {
+      create: {
+        actorId: userId,
+        type: "CREATED",
+        toValue: "Pending",
+        reason: `aiSource=${aiSource}`,
+      },
+    },
   };
 
   let complaint: ComplaintWithReporter;
@@ -451,21 +459,9 @@ export const confirmDuplicate = async (
         data: { voteCount: { increment: complaint.voteCount } },
       });
 
-      const rescored = scorePriority(
-        priorityFeaturesFromComplaint(withVotes),
-        withVotes.voteCount,
-      );
-
       const updatedMaster = await tx.complaint.update({
         where: { id: master.id },
-        data: {
-          priority: rescored.priority,
-          urgencyScore: rescored.urgencyScore,
-          requiredWorkers: rescored.requiredWorkers,
-          requiredHeavyVehicles: rescored.requiredHeavyVehicles,
-          estimatedTimeMinutes: rescored.estimatedTimeMinutes,
-          priorityReasons: rescored.reasons,
-        },
+        data: rescoreComplaint(withVotes, withVotes.voteCount),
       });
 
       const reason =
@@ -489,6 +485,18 @@ export const confirmDuplicate = async (
         update: { reason, confirmedBy },
       });
 
+      await recordEvents(tx, [
+        {
+          complaintId: complaint.id,
+          actorId: confirmedBy,
+          type: "DUPLICATE_CONFIRMED",
+          fromValue: complaint.duplicateSuggestionOfId,
+          toValue: master.id,
+          reason,
+        },
+        statusChangeEvent(complaint.id, confirmedBy, complaint.status, "Linked"),
+      ]);
+
       const linked = await tx.complaint.findUniqueOrThrow({
         where: { id: complaint.id },
       });
@@ -500,8 +508,85 @@ export const confirmDuplicate = async (
 };
 
 // ============================================================
+// REJECT DUPLICATE SUGGESTION (staff)
+// ============================================================
+// Clears the suggestion and records the decision; the complaint stays a
+// separate report.
+// ============================================================
+
+export const rejectDuplicate = async (
+  complaintId: string,
+  rejectedBy: string,
+  reason?: string,
+) => {
+  return prisma.$transaction(async (tx) => {
+    const complaint = await tx.complaint.findUnique({
+      where: { id: complaintId },
+    });
+
+    if (!complaint) {
+      throw new HttpError(404, "Complaint not found");
+    }
+
+    if (!complaint.duplicateSuggestionOfId) {
+      throw new HttpError(400, "This complaint has no duplicate suggestion to reject.");
+    }
+
+    if (complaint.masterComplaintId) {
+      throw new HttpError(409, "This complaint is already linked; the suggestion cannot be rejected.");
+    }
+
+    const updated = await tx.complaint.update({
+      where: { id: complaint.id },
+      data: {
+        duplicateSuggestionOfId: null,
+        duplicateSuggestionVerdict: null,
+        duplicateSuggestionReason: null,
+      },
+    });
+
+    await recordEvents(tx, [
+      {
+        complaintId: complaint.id,
+        actorId: rejectedBy,
+        type: "DUPLICATE_REJECTED",
+        fromValue: complaint.duplicateSuggestionOfId,
+        reason: reason ?? complaint.duplicateSuggestionReason,
+      },
+    ]);
+
+    return updated;
+  });
+};
+
+// ============================================================
 // GET NEARBY COMPLAINTS
 // ============================================================
+// Visible to every signed-in user, so only public fields are selected:
+// no reporter id/email, staff ids or idempotency keys.
+// ============================================================
+
+const PUBLIC_COMPLAINT_SELECT = {
+  id: true,
+  description: true,
+  imageUrl: true,
+  latitude: true,
+  longitude: true,
+  address: true,
+  wasteType: true,
+  status: true,
+  priority: true,
+  urgencyScore: true,
+  voteCount: true,
+  aiSummary: true,
+  aiWasteCategories: true,
+  isSimulated: true,
+  masterComplaintId: true,
+  afterImageUrl: true,
+  resolvedAt: true,
+  createdAt: true,
+  updatedAt: true,
+} satisfies Prisma.ComplaintSelect;
 
 export const getNearbyComplaints = async (
   latitude: number,
@@ -515,6 +600,8 @@ export const getNearbyComplaints = async (
           in: ACTIVE_STATUSES,
         },
       },
+
+      select: PUBLIC_COMPLAINT_SELECT,
 
       orderBy: {
         createdAt: "desc",
@@ -558,13 +645,35 @@ export const getNearbyComplaints = async (
 };
 
 // ============================================================
+// CITIZEN VIEW
+// ============================================================
+// What a citizen sees of their own complaint: no reporter email, no staff
+// user ids (assignment staff/assigner, verifier).
+// ============================================================
+
+const citizenAssignmentSelect = {
+  id: true,
+  status: true,
+  assignedAt: true,
+  updatedAt: true,
+} satisfies Prisma.AssignmentSelect;
+
+const toCitizenView = <T extends { verifiedBy: string | null; User?: unknown }>(
+  complaint: T,
+): Omit<T, "verifiedBy" | "User"> => {
+  const { verifiedBy: _verifiedBy, User: _reporter, ...rest } = complaint;
+
+  return rest;
+};
+
+// ============================================================
 // GET USER COMPLAINTS
 // ============================================================
 
 export const getUserComplaints = async (
   userId: string,
 ) => {
-  return prisma.complaint.findMany({
+  const complaints = await prisma.complaint.findMany({
     where: {
       userId,
     },
@@ -574,19 +683,27 @@ export const getUserComplaints = async (
     },
 
     include: {
-      assignments: true,
+      assignments: { select: citizenAssignmentSelect },
     },
   });
+
+  return complaints.map((complaint) => toCitizenView(complaint));
 };
 
 // ============================================================
 // GET SINGLE COMPLAINT
 // ============================================================
+// Citizens may only read their own complaints (others look "not found" so
+// ids cannot be probed); staff and admins can read any, with reporter info.
+// ============================================================
 
 export const getComplaintById = async (
   complaintId: string,
+  viewer: { userId: string; role: string | undefined },
 ) => {
-  return prisma.complaint.findUnique({
+  const isStaff = viewer.role === "STAFF" || viewer.role === "ADMIN";
+
+  const complaint = await prisma.complaint.findUnique({
     where: {
       id: complaintId,
     },
@@ -600,7 +717,7 @@ export const getComplaintById = async (
         },
       },
 
-      assignments: true,
+      assignments: isStaff ? true : { select: citizenAssignmentSelect },
 
       childComplaints: {
         select: {
@@ -608,12 +725,25 @@ export const getComplaintById = async (
           description: true,
           status: true,
           voteCount: true,
-          duplicateSimilarity: true,
           createdAt: true,
         },
       },
     },
   });
+
+  if (!complaint) {
+    throw new HttpError(404, "Complaint not found");
+  }
+
+  if (isStaff) {
+    return complaint;
+  }
+
+  if (complaint.userId !== viewer.userId) {
+    throw new HttpError(404, "Complaint not found");
+  }
+
+  return toCitizenView(complaint);
 };
 
 // ============================================================
@@ -622,49 +752,53 @@ export const getComplaintById = async (
 
 export const updateComplaint = async (
   complaintId: string,
-  data: Record<string, unknown>,
+  actorId: string,
+  data: {
+    status?: ComplaintStatus | undefined;
+    address?: string | undefined;
+    wasteType?: string | undefined;
+    isScheduled?: boolean | undefined;
+  },
 ) => {
-  const allowedFields = [
-    "status",
-    "address",
-    "wasteType",
-    "priority",
-    "isScheduled",
-  ];
+  return prisma.$transaction(async (tx) => {
+    const existing = await tx.complaint.findUnique({
+      where: { id: complaintId },
+    });
 
-  if (
-    data.status !== undefined &&
-    !COMPLAINT_STATUSES.includes(data.status as ComplaintStatus)
-  ) {
-    throw new Error(
-      `Invalid status. Allowed values: ${COMPLAINT_STATUSES.join(", ")}`,
-    );
-  }
-
-  if (
-    data.priority !== undefined &&
-    !PRIORITIES.includes(data.priority as Priority)
-  ) {
-    throw new Error(
-      `Invalid priority. Allowed values: ${PRIORITIES.join(", ")}`,
-    );
-  }
-
-  const updateData:
-    Record<string, unknown> = {};
-
-  for (const field of allowedFields) {
-    if (data[field] !== undefined) {
-      updateData[field] = data[field];
+    if (!existing) {
+      throw new HttpError(404, "Complaint not found");
     }
-  }
 
-  return prisma.complaint.update({
-    where: {
-      id: complaintId,
-    },
+    const statusChanged =
+      data.status !== undefined && data.status !== existing.status;
 
-    data: updateData,
+    const updated = await tx.complaint.update({
+      where: { id: complaintId },
+      data: {
+        ...(data.address !== undefined && { address: data.address }),
+        ...(data.wasteType !== undefined && { wasteType: data.wasteType }),
+        ...(data.isScheduled !== undefined && { isScheduled: data.isScheduled }),
+        ...(statusChanged && {
+          status: data.status as ComplaintStatus,
+          resolvedAt:
+            data.status === "Resolved" ? (existing.resolvedAt ?? new Date()) : null,
+        }),
+      },
+    });
+
+    if (statusChanged) {
+      await recordEvents(tx, [
+        statusChangeEvent(
+          complaintId,
+          actorId,
+          existing.status,
+          data.status as string,
+          "Changed by staff edit",
+        ),
+      ]);
+    }
+
+    return updated;
   });
 };
 
@@ -688,7 +822,7 @@ export const verifyComplaint = async (
     });
 
   if (!complaint) {
-    throw new Error(
+    throw new HttpError(404,
       "Complaint not found",
     );
   }
@@ -861,141 +995,125 @@ export const getHotspots = async () => {
 
 export const mergeComplaints = async (
   complaintIds: string[],
+  actorId: string,
 ) => {
-  if (complaintIds.length < 2) {
-    throw new Error(
-      "At least two complaints are required for merging",
-    );
+  const ids = [...new Set(complaintIds)];
+
+  if (ids.length < 2) {
+    throw new HttpError(400, "At least two different complaints are required for merging");
   }
 
-  const complaints =
-    await prisma.complaint.findMany({
-      where: {
-        id: {
-          in: complaintIds,
-        },
-      },
-    });
+  // The first id in the request is the master.
+  const [masterId, ...mergedIds] = ids as [string, ...string[]];
 
-  if (
-    complaints.length !==
-    complaintIds.length
-  ) {
-    throw new Error(
-      "One or more complaints were not found",
-    );
-  }
+  return prisma.$transaction(
+    async (tx) => {
+      const complaints = await tx.complaint.findMany({
+        where: { id: { in: ids } },
+      });
 
-  const masterComplaint =
-    complaints[0];
+      if (complaints.length !== ids.length) {
+        throw new HttpError(404, "One or more complaints were not found");
+      }
 
-  if (!masterComplaint) {
-    throw new Error(
-      "Master complaint could not be determined",
-    );
-  }
+      const alreadyLinked = complaints.filter(
+        (complaint) =>
+          complaint.status === "Linked" ||
+          complaint.status === "Merged" ||
+          complaint.masterComplaintId !== null,
+      );
 
-  const totalVotes =
-    complaints.reduce(
-      (total, complaint) =>
-        total +
-        (complaint.voteCount ?? 1),
-      0,
-    );
+      if (alreadyLinked.length > 0) {
+        throw new HttpError(
+          409,
+          `Already linked or merged: ${alreadyLinked.map((c) => c.id).join(", ")}`,
+        );
+      }
 
-  const descriptions =
-    complaints.map(
-      (complaint) =>
-        complaint.description,
-    );
+      const merged = complaints.filter((complaint) => complaint.id !== masterId);
+      const addedVotes = merged.reduce((total, c) => total + c.voteCount, 0);
 
-  const combinedDescription =
-    descriptions.join("\n");
+      await tx.complaint.updateMany({
+        where: { id: { in: mergedIds } },
+        data: { masterComplaintId: masterId, status: "Merged" },
+      });
 
-  const updatedMaster =
-    await prisma.complaint.update({
-      where: {
-        id: masterComplaint.id,
-      },
+      // Anything already linked to a merged complaint moves to the master.
+      await tx.complaint.updateMany({
+        where: { masterComplaintId: { in: mergedIds } },
+        data: { masterComplaintId: masterId },
+      });
 
-      data: {
-        voteCount: totalVotes,
-        status: "Pending",
-      },
-    });
+      // The master keeps its status (it may already be assigned).
+      const withVotes = await tx.complaint.update({
+        where: { id: masterId },
+        data: { voteCount: { increment: addedVotes } },
+      });
 
-  await prisma.complaint.updateMany({
-    where: {
-      id: {
-        in: complaintIds.filter(
-          (id) =>
-            id !==
-            masterComplaint.id,
-        ),
-      },
+      const updatedMaster = await tx.complaint.update({
+        where: { id: masterId },
+        data: rescoreComplaint(withVotes, withVotes.voteCount),
+      });
+
+      await recordEvents(
+        tx,
+        merged.flatMap((complaint) => [
+          {
+            complaintId: complaint.id,
+            actorId,
+            type: "MERGED" as const,
+            toValue: masterId,
+          },
+          statusChangeEvent(complaint.id, actorId, complaint.status, "Merged"),
+        ]),
+      );
+
+      return {
+        masterComplaint: updatedMaster,
+        mergedComplaintIds: mergedIds,
+        voteCount: updatedMaster.voteCount,
+      };
     },
-
-    data: {
-      masterComplaintId:
-        masterComplaint.id,
-
-      status: "Merged",
-    },
-  });
-
-  return {
-    masterComplaint:
-      updatedMaster,
-
-    mergedComplaintIds:
-      complaintIds.filter(
-        (id) =>
-          id !==
-          masterComplaint.id,
-      ),
-
-    voteCount: totalVotes,
-
-    combinedDescriptions:
-      combinedDescription,
-  };
+    { timeout: 20_000 },
+  );
 };
 
 // ============================================================
 // GET TODAY'S TASKS
 // ============================================================
+// The complaints in today's generated plan (committed + scheduled) that
+// are still active, in plan order. No plan today -> no tasks, so a plan
+// from a previous day can never show up as today's work.
+// ============================================================
 
-export const getTodaysTasks =
-  async () => {
-    return prisma.complaint.findMany({
-      where: {
-        isScheduled: true,
+export const getTodaysTasks = async () => {
+  const plan = await getTodayPlan();
 
-        status: {
-          in: ACTIVE_STATUSES,
-        },
-      },
+  if (!plan) {
+    return { planGenerated: false, generatedAt: null, tasks: [] };
+  }
 
-      orderBy: [
-        {
-          priority: "asc",
-        },
+  const order = [...plan.committed, ...plan.scheduled].map(
+    (item) => item.complaintId,
+  );
 
-        {
-          urgencyScore: "desc",
-        },
+  const complaints = await prisma.complaint.findMany({
+    where: {
+      id: { in: order },
+      status: { in: ACTIVE_STATUSES },
+    },
+    include: {
+      assignments: true,
+    },
+  });
 
-        {
-          voteCount: "desc",
-        },
+  const position = new Map(order.map((id, index) => [id, index]));
 
-        {
-          createdAt: "asc",
-        },
-      ],
-
-      include: {
-        assignments: true,
-      },
-    });
+  return {
+    planGenerated: true,
+    generatedAt: plan.generatedAt,
+    tasks: complaints.sort(
+      (a, b) => (position.get(a.id) ?? 0) - (position.get(b.id) ?? 0),
+    ),
   };
+};

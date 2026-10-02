@@ -1,3 +1,31 @@
-import type { DashboardStats } from '../types';
-/** Implement using the existing backend's reporting endpoints. */
-export async function getDashboardStats(): Promise<DashboardStats> { throw new Error('Analytics API is not connected.'); }
+import { apiClient, unwrap } from "./client";
+import type { Analytics, DailyPlan, DashboardStats } from "../types";
+
+export const getDashboardStats = () =>
+  unwrap<DashboardStats>(apiClient.get("/admin/dashboard"));
+
+export const getAnalytics = (includeSimulated: boolean) =>
+  unwrap<Analytics>(apiClient.get("/admin/analytics", { params: { includeSimulated } }));
+
+// Downloads the CSV with the auth header (a plain link would not send it).
+export const downloadComplaintsCsv = async (includeSimulated: boolean) => {
+  const response = await apiClient.get<Blob>("/admin/reports/export.csv", {
+    params: { includeSimulated },
+    responseType: "blob",
+  });
+
+  const url = URL.createObjectURL(response.data);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = `complaints-${new Date().toISOString().slice(0, 10)}${includeSimulated ? "" : "-real-only"}.csv`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+};
+
+// ---------------- Daily plan ----------------
+
+export const getTodayPlan = () => unwrap<DailyPlan | null>(apiClient.get("/admin/plan/today"));
+
+export const generatePlan = () => unwrap<DailyPlan>(apiClient.post("/admin/plan/generate", {}));

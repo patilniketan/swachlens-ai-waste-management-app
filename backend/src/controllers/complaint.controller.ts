@@ -3,7 +3,7 @@ import type { Request, Response } from "express";
 import * as complaintService from "../services/complaint.service.js";
 import type { AuthRequest } from "../middleware/auth.middleware.js";
 import { getParam } from "../utils/params.js";
-import { HttpError } from "../utils/httpError.js";
+import { HttpError, sendError } from "../utils/httpError.js";
 
 // ============================================================
 // CREATE COMPLAINT
@@ -101,6 +101,37 @@ export const createComplaint = async (req: AuthRequest, res: Response) => {
 };
 
 // ============================================================
+// REJECT DUPLICATE SUGGESTION (STAFF / ADMIN)
+// ============================================================
+
+export const rejectDuplicate = async (req: AuthRequest, res: Response) => {
+  try {
+    const id = getParam(req.params.id);
+
+    if (!id || !req.userId) {
+      return res.status(400).json({
+        success: false,
+        message: "Complaint ID is required",
+      });
+    }
+
+    const complaint = await complaintService.rejectDuplicate(
+      id,
+      req.userId,
+      req.body?.reason,
+    );
+
+    return res.json({
+      success: true,
+      message: "Duplicate suggestion rejected",
+      data: complaint,
+    });
+  } catch (error) {
+    return sendError(res, error, "REJECT DUPLICATE", "Failed to reject duplicate suggestion");
+  }
+};
+
+// ============================================================
 // CONFIRM DUPLICATE (STAFF / ADMIN)
 // ============================================================
 
@@ -165,12 +196,7 @@ export const getComplaints = async (req: AuthRequest, res: Response) => {
       data: complaints,
     });
   } catch (error) {
-    console.error("GET COMPLAINTS ERROR:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: "Failed to fetch complaints",
-    });
+    return sendError(res, error, "GET COMPLAINTS", "Failed to fetch complaints");
   }
 };
 
@@ -211,12 +237,7 @@ export const getNearbyComplaints = async (req: Request, res: Response) => {
       data: complaints,
     });
   } catch (error) {
-    console.error("NEARBY COMPLAINTS ERROR:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: "Failed to fetch nearby complaints",
-    });
+    return sendError(res, error, "NEARBY COMPLAINTS", "Failed to fetch nearby complaints");
   }
 };
 
@@ -235,7 +256,17 @@ export const getComplaintById = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    const complaint = await complaintService.getComplaintById(id);
+    if (!req.userId) {
+      return res.status(401).json({
+        success: false,
+        message: "Unauthorized",
+      });
+    }
+
+    const complaint = await complaintService.getComplaintById(id, {
+      userId: req.userId,
+      role: req.userRole,
+    });
 
     if (!complaint) {
       return res.status(404).json({
@@ -249,12 +280,7 @@ export const getComplaintById = async (req: AuthRequest, res: Response) => {
       data: complaint,
     });
   } catch (error) {
-    console.error("GET COMPLAINT ERROR:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: "Failed to fetch complaint",
-    });
+    return sendError(res, error, "GET COMPLAINT", "Failed to fetch complaint");
   }
 };
 
@@ -273,7 +299,11 @@ export const updateComplaint = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    const complaint = await complaintService.updateComplaint(id, req.body);
+    const complaint = await complaintService.updateComplaint(
+      id,
+      req.userId as string,
+      req.body,
+    );
 
     return res.json({
       success: true,
@@ -281,13 +311,7 @@ export const updateComplaint = async (req: AuthRequest, res: Response) => {
       data: complaint,
     });
   } catch (error) {
-    console.error("UPDATE COMPLAINT ERROR:", error);
-
-    return res.status(400).json({
-      success: false,
-      message:
-        error instanceof Error ? error.message : "Failed to update complaint",
-    });
+    return sendError(res, error, "UPDATE COMPLAINT", "Failed to update complaint");
   }
 };
 
@@ -321,13 +345,7 @@ export const verifyComplaint = async (req: AuthRequest, res: Response) => {
       data: complaint,
     });
   } catch (error) {
-    console.error("VERIFY COMPLAINT ERROR:", error);
-
-    return res.status(400).json({
-      success: false,
-      message:
-        error instanceof Error ? error.message : "Failed to verify complaint",
-    });
+    return sendError(res, error, "VERIFY COMPLAINT", "Failed to verify complaint");
   }
 };
 
@@ -344,12 +362,7 @@ export const getHotspots = async (req: Request, res: Response) => {
       data: hotspots,
     });
   } catch (error) {
-    console.error("GET HOTSPOTS ERROR:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: "Failed to fetch hotspots",
-    });
+    return sendError(res, error, "GET HOTSPOTS", "Failed to fetch hotspots");
   }
 };
 
@@ -359,17 +372,13 @@ export const getHotspots = async (req: Request, res: Response) => {
 
 export const mergeComplaints = async (req: AuthRequest, res: Response) => {
   try {
-    const { complaintIds } = req.body;
+    // Body validated by mergeComplaintsSchema.
+    const { complaintIds } = req.body as { complaintIds: string[] };
 
-    if (!Array.isArray(complaintIds) || complaintIds.length < 2) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "complaintIds must be an array containing at least 2 complaint IDs",
-      });
-    }
-
-    const result = await complaintService.mergeComplaints(complaintIds);
+    const result = await complaintService.mergeComplaints(
+      complaintIds,
+      req.userId as string,
+    );
 
     return res.json({
       success: true,
@@ -377,13 +386,7 @@ export const mergeComplaints = async (req: AuthRequest, res: Response) => {
       data: result,
     });
   } catch (error) {
-    console.error("MERGE COMPLAINTS ERROR:", error);
-
-    return res.status(400).json({
-      success: false,
-      message:
-        error instanceof Error ? error.message : "Failed to merge complaints",
-    });
+    return sendError(res, error, "MERGE COMPLAINTS", "Failed to merge complaints");
   }
 };
 
@@ -393,18 +396,19 @@ export const mergeComplaints = async (req: AuthRequest, res: Response) => {
 
 export const getTodaysTasks = async (req: AuthRequest, res: Response) => {
   try {
-    const tasks = await complaintService.getTodaysTasks();
+    const { tasks, planGenerated, generatedAt } =
+      await complaintService.getTodaysTasks();
 
     return res.json({
       success: true,
       data: tasks,
+      planGenerated,
+      planGeneratedAt: generatedAt,
+      ...(!planGenerated && {
+        message: "No plan has been generated for today yet.",
+      }),
     });
   } catch (error) {
-    console.error("TODAYS TASKS ERROR:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: "Failed to fetch today's tasks",
-    });
+    return sendError(res, error, "TODAYS TASKS", "Failed to fetch today's tasks");
   }
 };

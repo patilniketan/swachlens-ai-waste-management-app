@@ -21,10 +21,11 @@ import {
   type DemoIncident,
 } from "../src/demo/demoData.js";
 import { scorePriority } from "../src/services/priority.service.js";
-import type {
-  ComplaintStatus,
+import { utcToday } from "../src/utils/date.js";
+import {
   Prisma,
-  Role,
+  type ComplaintStatus,
+  type Role,
 } from "../src/generated/prisma/client.js";
 
 // Demo-only credentials, documented in README.md. Never reuse for real accounts.
@@ -64,6 +65,7 @@ async function resetSimulatedComplaints() {
   if (ids.length === 0) return 0;
 
   await prisma.$transaction([
+    prisma.complaintEvent.deleteMany({ where: { complaintId: { in: ids } } }),
     prisma.complaintLink.deleteMany({
       where: {
         OR: [
@@ -116,14 +118,22 @@ async function seedUsers() {
 }
 
 async function seedTodaysResources() {
-  // Same "today" boundary as services/resource.service.ts.
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  // Same UTC day key as services/resource.service.ts. Any stored plan is
+  // cleared: generating today's plan is a live demo step.
+  const today = utcToday();
+  const data = {
+    workers: 15,
+    heavyVehicles: 5,
+    available: true,
+    plan: Prisma.DbNull,
+    planGeneratedAt: null,
+    planGeneratedBy: null,
+  };
 
   return prisma.resource.upsert({
     where: { date: today },
-    update: { workers: 15, heavyVehicles: 5, available: true },
-    create: { date: today, workers: 15, heavyVehicles: 5, available: true },
+    update: data,
+    create: { date: today, ...data },
   });
 }
 
@@ -151,6 +161,9 @@ async function seedComplaints(
   const masters: Prisma.ComplaintCreateManyInput[] = [];
   const linked: Prisma.ComplaintCreateManyInput[] = [];
   const links: Prisma.ComplaintLinkCreateManyInput[] = [];
+  const events: Prisma.ComplaintEventCreateManyInput[] = [];
+
+  const at = (date: Date, hours: number) => new Date(date.getTime() + hours * HOUR);
   const assignments: Prisma.AssignmentCreateManyInput[] = [];
 
   const seededIncidents = DEMO_INCIDENTS.filter(
@@ -215,10 +228,7 @@ async function seedComplaints(
       ...incidentCoordinates(incident),
       status,
       voteCount: reportCount,
-      isScheduled:
-        status === "Assigned" ||
-        status === "InProgress" ||
-        (isActive && masterScore.priority === "CRITICAL"),
+      isScheduled: false,
       createdAt,
       resolvedAt,
       ...(incident.resolution && {
@@ -228,6 +238,60 @@ async function seedComplaints(
         verifiedBy: staff.id,
       }),
     });
+
+    // Simulated history for the audit trail (GET /api/admin/complaints/:id/events).
+    const reporterId = pick(users.citizens, index).id;
+    events.push({
+      complaintId: masterId,
+      actorId: reporterId,
+      type: "CREATED",
+      toValue: "Pending",
+      reason: "Simulated seed data",
+      createdAt,
+    });
+
+    if (status !== "Pending") {
+      events.push(
+        {
+          complaintId: masterId,
+          actorId: users.admin.id,
+          type: "ASSIGNED",
+          toValue: staff.email,
+          createdAt: at(createdAt, 2),
+        },
+        {
+          complaintId: masterId,
+          actorId: users.admin.id,
+          type: "STATUS_CHANGED",
+          fromValue: "Pending",
+          toValue: "Assigned",
+          createdAt: at(createdAt, 2),
+        },
+      );
+    }
+
+    if (status === "InProgress" || status === "Resolved") {
+      events.push({
+        complaintId: masterId,
+        actorId: staff.id,
+        type: "STATUS_CHANGED",
+        fromValue: "Assigned",
+        toValue: "InProgress",
+        createdAt: at(createdAt, 4),
+      });
+    }
+
+    if (status === "Resolved" && resolvedAt && incident.resolution) {
+      events.push({
+        complaintId: masterId,
+        actorId: staff.id,
+        type: "STATUS_CHANGED",
+        fromValue: "InProgress",
+        toValue: "Resolved",
+        reason: `Completed with after photo, ${incident.resolution.verifiedWeightKg} kg weighed (simulated)`,
+        createdAt: resolvedAt,
+      });
+    }
 
     incident.reports.slice(1).forEach((description, k) => {
       const linkedId = `${masterId}-r${k + 2}`;
@@ -250,13 +314,43 @@ async function seedComplaints(
         createdAt: new Date(createdAt.getTime() + (k + 1) * 5 * HOUR),
       });
 
+      const reportedAt = at(createdAt, (k + 1) * 5);
+
       links.push({
         masterComplaintId: masterId,
         linkedComplaintId: linkedId,
         reason,
         confirmedBy: staff.id,
-        createdAt: new Date(createdAt.getTime() + (k + 1) * 5 * HOUR),
+        createdAt: reportedAt,
       });
+
+      events.push(
+        {
+          complaintId: linkedId,
+          actorId: pick(users.citizens, index + k + 1).id,
+          type: "CREATED",
+          toValue: "Pending",
+          reason: "Simulated seed data",
+          createdAt: reportedAt,
+        },
+        {
+          complaintId: linkedId,
+          actorId: staff.id,
+          type: "DUPLICATE_CONFIRMED",
+          fromValue: masterId,
+          toValue: masterId,
+          reason,
+          createdAt: at(reportedAt, 1),
+        },
+        {
+          complaintId: linkedId,
+          actorId: staff.id,
+          type: "STATUS_CHANGED",
+          fromValue: "Pending",
+          toValue: "Linked",
+          createdAt: at(reportedAt, 1),
+        },
+      );
     });
 
     if (status !== "Pending") {
@@ -280,15 +374,16 @@ async function seedComplaints(
   await prisma.complaint.createMany({ data: linked });
   await prisma.complaintLink.createMany({ data: links });
   await prisma.assignment.createMany({ data: assignments });
+  await prisma.complaintEvent.createMany({ data: events });
 
-  return { masters, linked, links, assignments };
+  return { masters, linked, links, assignments, events };
 }
 
 async function main() {
   const removed = await resetSimulatedComplaints();
   const users = await seedUsers();
   const resource = await seedTodaysResources();
-  const { masters, linked, links, assignments } = await seedComplaints(users);
+  const { masters, linked, links, assignments, events } = await seedComplaints(users);
 
   const all = [...masters, ...linked];
   const countBy = (key: "status" | "priority") =>
@@ -314,6 +409,8 @@ async function main() {
   console.log(`  By status: ${JSON.stringify(countBy("status"))}`);
   console.log(`  By priority: ${JSON.stringify(countBy("priority"))}`);
   console.log(`  Assignments: ${assignments.length}`);
+  console.log(`  Events: ${events.length} (simulated history)`);
+  console.log("  No plan generated yet: POST /api/admin/plan/generate");
 }
 
 main()

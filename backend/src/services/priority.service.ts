@@ -206,3 +206,33 @@ export const priorityFeaturesFromComplaint = (complaint: {
   blockedRoad: complaint.aiBlockedRoad,
   nearSensitiveSite: complaint.aiNearSensitiveSite,
 });
+
+// Reasons added outside the scorer that must survive re-scoring.
+export const OVERRIDE_REASON_PREFIX = "Priority set by admin";
+const KEPT_REASON_PREFIXES = [OVERRIDE_REASON_PREFIX, "AI analysis unavailable"];
+
+// Re-scores a stored complaint (e.g. after its vote count changed). An admin
+// override keeps its priority; urgency, crew and time are still refreshed.
+export const rescoreComplaint = (
+  complaint: Parameters<typeof priorityFeaturesFromComplaint>[0] & {
+    priority: PriorityLevel;
+    priorityOverridden: boolean;
+    priorityReasons: string[];
+  },
+  voteCount: number,
+) => {
+  const scored = scorePriority(priorityFeaturesFromComplaint(complaint), voteCount);
+
+  const kept = complaint.priorityReasons.filter((reason) =>
+    KEPT_REASON_PREFIXES.some((prefix) => reason.startsWith(prefix)),
+  );
+
+  return {
+    priority: complaint.priorityOverridden ? complaint.priority : scored.priority,
+    urgencyScore: scored.urgencyScore,
+    requiredWorkers: scored.requiredWorkers,
+    requiredHeavyVehicles: scored.requiredHeavyVehicles,
+    estimatedTimeMinutes: scored.estimatedTimeMinutes,
+    priorityReasons: [...kept, ...scored.reasons],
+  };
+};

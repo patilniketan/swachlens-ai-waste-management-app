@@ -8,19 +8,20 @@ datasource db {
 }
 
 model User {
-  id               String       @id @default(cuid())
-  email            String       @unique
+  id               String           @id @default(cuid())
+  email            String           @unique
   password         String?
-  isVerified       Boolean      @default(false)
+  isVerified       Boolean          @default(false)
   // HMAC of the 6-digit code; the plain code is never stored.
   otpHash          String?
   otpExpiresAt     DateTime?
-  otpAttempts      Int          @default(0)
-  createdAt        DateTime     @default(now())
-  updatedAt        DateTime     @updatedAt
-  role             Role         @default(CITIZEN)
-  StaffAssignments Assignment[] @relation("StaffAssignments")
+  otpAttempts      Int              @default(0)
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+  role             Role             @default(CITIZEN)
+  StaffAssignments Assignment[]     @relation("StaffAssignments")
   Complaints       Complaint[]
+  ComplaintEvents  ComplaintEvent[]
 }
 
 model Complaint {
@@ -77,16 +78,41 @@ model Complaint {
   // Filled in by field staff when the complaint is resolved.
   verifiedWeightKg           Float?
   afterImageUrl              String?
+  resolutionNotes            String?
   resolvedAt                 DateTime?
+  // An admin set the priority by hand; re-scoring keeps it.
+  priorityOverridden         Boolean           @default(false)
   assignments                Assignment[]
   masterComplaint            Complaint?        @relation("ComplaintMaster", fields: [masterComplaintId], references: [id])
   childComplaints            Complaint[]       @relation("ComplaintMaster")
   User                       User              @relation(fields: [userId], references: [id])
   linkedComplaintLinks       ComplaintLink[]   @relation("LinkedComplaintLink")
   masterComplaintLinks       ComplaintLink[]   @relation("MasterComplaintLink")
+  events                     ComplaintEvent[]
 
   // Duplicate-candidate bounding-box lookup.
   @@index([status, latitude, longitude])
+  @@index([masterComplaintId])
+}
+
+// Audit trail: one row per status change, assignment, merge, duplicate
+// decision and priority override.
+model ComplaintEvent {
+  id          String             @id @default(cuid())
+  complaintId String
+  // null = system action
+  actorId     String?
+  type        ComplaintEventType
+  fromValue   String?
+  toValue     String?
+  // Override reason, resolution notes, etc.
+  reason      String?
+  createdAt   DateTime           @default(now())
+  complaint   Complaint          @relation(fields: [complaintId], references: [id])
+  actor       User?              @relation(fields: [actorId], references: [id])
+
+  @@index([complaintId, createdAt])
+  @@index([type])
 }
 
 model ComplaintLink {
@@ -117,13 +143,18 @@ model Assignment {
 }
 
 model Resource {
-  id            String   @id @default(cuid())
-  date          DateTime @unique
-  workers       Int      @default(0)
-  heavyVehicles Int      @default(0)
-  available     Boolean  @default(true)
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id              String    @id @default(cuid())
+  // Calendar day in UTC.
+  date            DateTime  @unique @db.Date
+  workers         Int       @default(0)
+  heavyVehicles   Int       @default(0)
+  available       Boolean   @default(true)
+  // Snapshot of the last plan generated for this day (see plan.service.ts).
+  plan            Json?
+  planGeneratedAt DateTime?
+  planGeneratedBy String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 }
 
 enum Role {
@@ -161,4 +192,14 @@ enum SameIssueVerdict {
   yes
   no
   unsure
+}
+
+enum ComplaintEventType {
+  CREATED
+  STATUS_CHANGED
+  ASSIGNED
+  MERGED
+  DUPLICATE_CONFIRMED
+  DUPLICATE_REJECTED
+  PRIORITY_OVERRIDE
 }

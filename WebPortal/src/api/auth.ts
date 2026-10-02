@@ -1,46 +1,30 @@
-import { apiClient } from "./client";
-import type { UserRole } from "../types";
+import { apiClient, type Envelope } from "./client";
+import { clearSession, PORTAL_ROLES, saveSession } from "../auth/session";
+import type { AuthUser } from "../types";
 
 export interface LoginPayload {
   email: string;
   password: string;
 }
 
-export interface LoginUser {
-  id: string;
-  email: string;
-  role: UserRole;
-}
+// Signs in and stores the session. Citizens are refused: they use the app.
+export const login = async (payload: LoginPayload): Promise<AuthUser> => {
+  const response = await apiClient.post<Envelope<{ user: AuthUser; token: string }>>(
+    "/auth/login",
+    payload,
+  );
 
-export interface LoginResponse {
-  success: boolean;
-  message: string;
-  data: {
-    user: LoginUser;
-    token: string;
-  };
-}
+  const { user, token } = response.data.data;
 
-export const login = async (payload: LoginPayload): Promise<LoginResponse> => {
-  const response = await apiClient.post<LoginResponse>("/auth/login", payload);
-
-  const result = response.data;
-
-  if (result.success && result.data?.token) {
-    localStorage.setItem("token", result.data.token);
-    localStorage.setItem("user", JSON.stringify(result.data.user));
+  if (!PORTAL_ROLES.includes(user.role)) {
+    throw new Error("This portal is for municipal staff. Citizens can report waste in the CivicClean app.");
   }
 
-  return result;
-};
+  saveSession(token, user);
 
-export const getCurrentUser = async () => {
-  const response = await apiClient.get("/auth/me");
-
-  return response.data;
+  return user;
 };
 
 export const logout = () => {
-  localStorage.removeItem("token");
-  localStorage.removeItem("user");
+  clearSession();
 };

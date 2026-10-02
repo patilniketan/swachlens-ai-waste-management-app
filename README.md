@@ -39,6 +39,48 @@ Two flags in `backend/.env` keep the live demo independent of external services:
 
 Check a Gemini key with `npm run gemini:smoke` in `backend/`. It makes one real call and prints the result or the exact error.
 
+## Admin operations
+
+All of these require an ADMIN token.
+
+| Endpoint | What it does |
+| --- | --- |
+| `POST /api/admin/plan/generate` | Builds today's plan (see below). |
+| `GET /api/admin/plan/today` | Returns the stored plan for today. Staff see it as `GET /api/complaints/todays-tasks`. |
+| `PATCH /api/admin/complaints/:id/priority` | Sets a priority by hand. `{ priority, reason }` is required; the override survives re-scoring when votes change. |
+| `GET /api/admin/complaints/:id/events` | The audit trail: created, every status change, assignment, merge, duplicate confirm/reject, priority override, with who did it and why. |
+| `GET /api/admin/analytics` | Live aggregates: counts by status and waste type, created vs resolved over the last 7 days, average resolution hours, duplicate suggestions confirmed/rejected/pending, and AI volume estimate vs weighed kg. |
+| `GET /api/admin/reports/export.csv` | Complaint export. It contains no reporter emails, and an `isSimulated` column keeps demo data labelled. |
+| `GET /api/admin/complaints?take=25&skip=0&status=Pending` | Paginated complaint list (`take` at most 100). |
+
+Analytics and the export accept `?includeSimulated=false` to use real data only. Analytics always reports how many rows are simulated in `dataset`.
+
+**How the plan works.** Today's capacity is `workers × SHIFT_MINUTES` worker-minutes and `heavyVehicles × SHIFT_MINUTES` vehicle-minutes, taken from today's (UTC) Resource row.
+1. Work that is already assigned or in progress is reserved first.
+2. Pending, unassigned complaints are taken in order of urgency, then votes, then age, as long as their `requiredWorkers × estimatedTimeMinutes` (and vehicle time) still fits.
+3. Everything else is deferred with a reason, such as "Not enough crew time left" or "Needs 5 workers at once; only 4 on duty".
+
+The plan never exceeds capacity. If already-assigned work alone exceeds it, the plan says so in `warnings`.
+
+**Completing a task.** Staff send `PATCH /api/assignments/:id/status` as multipart with `status=COMPLETED`, `verifiedWeightKg`, optional `resolutionNotes`, and the after photo in the `afterImage` field. Tasks only move forward: ASSIGNED, then IN_PROGRESS, then COMPLETED.
+
+## Security defaults
+
+- **Who can read what.** Citizens can read only their own complaints (others return 404) and never see reporter emails or staff IDs. `/nearby` and `/hotspots` return no user identifiers. Changing or verifying a complaint requires STAFF or ADMIN.
+- **Validation.** Every request body is validated with Zod (`backend/src/validation/schemas.ts`). Unknown fields on staff endpoints are rejected.
+- **Uploads.** JPEG, PNG or WebP only, at most 5MB. The file's bytes must match its declared type. Files are saved under a random UUID with an extension taken from the type, never from the client's filename.
+- **Rate limits** (per IP unless noted, all configurable in `.env`):
+
+  | Scope | Default |
+  | --- | --- |
+  | All `/api` | 1000 per 15 min |
+  | `/api/auth/*` | 10 per 15 min |
+  | Creating complaints | 20 per hour per user |
+
+  **For a live demo**, everyone on venue Wi-Fi may share one IP. Raise `AUTH_RATE_LIMIT_MAX` beforehand, and set `TRUST_PROXY=1` if the API runs behind a tunnel.
+- **CORS.** Browsers may call the API only from origins listed in `CORS_ORIGINS` (default `http://localhost:5173`). The mobile app is not affected.
+- **Errors.** 500 responses carry only a generic message. Details are logged on the server.
+
 ## Demo accounts
 
 Created by `npx prisma db seed`. **Demo use only**: anyone reading this file knows these passwords, so never use them on a deployment holding real data.

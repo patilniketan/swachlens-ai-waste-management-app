@@ -1,17 +1,24 @@
-import { Navigate, useLocation } from "react-router-dom";
+import { Navigate, Outlet, useLocation } from "react-router-dom";
+import { getToken, getUser, homeFor } from "../auth/session";
+import type { UserRole } from "../types";
 
 interface ProtectedRouteProps {
-  children: React.ReactNode;
+  // Roles allowed here; others are sent to their own home page.
+  roles: UserRole[];
+  children?: React.ReactNode;
 }
 
-export function ProtectedRoute({ children }: ProtectedRouteProps) {
+export function ProtectedRoute({ roles, children }: ProtectedRouteProps) {
   const location = useLocation();
+  const user = getUser();
 
-  const token = localStorage.getItem("token");
-
-  if (!token) {
-    return <Navigate to="/login" replace state={{ from: location }} />;
+  if (!getToken() || !user) {
+    return <Navigate to="/login" replace state={{ from: location.pathname }} />;
   }
 
-  return <>{children}</>;
+  if (!roles.includes(user.role)) {
+    return <Navigate to={homeFor(user.role)} replace />;
+  }
+
+  return <>{children ?? <Outlet />}</>;
 }
