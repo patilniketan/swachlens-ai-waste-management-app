@@ -56,9 +56,9 @@ export function Shell() {
     <div className="shell">
       <aside className={open ? "sidebar mobile-open" : "sidebar"}>
         <div className="brand">
-          <span className="brand-mark">C</span>
+          <span className="brand-mark">S</span>
           <span>
-            Civic<span>Clean</span>
+            Swachh<span>Lens</span> AI
           </span>
           <button className="mobile-close" onClick={() => setOpen(false)} aria-label="Close navigation">
             <X size={19} />

@@ -55,13 +55,13 @@ async function sendWithTransporter(
   otp: string,
 ): Promise<void> {
   await transporter.sendMail({
-    from: `"CivicClean" <${emailUser}>`,
+    from: `"SwachhLens AI" <${emailUser}>`,
     to: email,
-    subject: "Your CivicClean verification code",
-    text: `Your CivicClean verification code is ${otp}. This code will expire in 10 minutes.`,
+    subject: "Your SwachhLens AI verification code",
+    text: `Your SwachhLens AI verification code is ${otp}. This code will expire in 10 minutes.`,
     html: `
       <div style="font-family: Arial, sans-serif; line-height: 1.6;">
-        <h2>CivicClean Email Verification</h2>
+        <h2>SwachhLens AI Email Verification</h2>
         <p>Your verification code is:</p>
         <h1 style="letter-spacing: 6px;">${otp}</h1>
         <p>This code will expire in 10 minutes.</p>

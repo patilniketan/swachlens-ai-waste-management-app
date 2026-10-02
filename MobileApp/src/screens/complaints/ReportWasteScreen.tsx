@@ -13,7 +13,11 @@ import {
 import { launchCamera, launchImageLibrary, Asset } from 'react-native-image-picker';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { HomeStackParamList } from '../../navigation/AppNavigator';
-import { ensureLocationPermission, getCurrentCoordinates } from '../../utils/location';
+import {
+  ensureLocationPermission,
+  getCurrentCoordinates,
+  usingDemoLocation,
+} from '../../utils/location';
 import { validateDescription, validateAddress } from '../../utils/validation';
 import { createComplaint } from '../../services/complaint';
 import { ApiError } from '../../services/api';
@@ -100,6 +104,9 @@ export default function ReportWasteScreen({ navigation }: Props) {
     const result = await launchCamera({
       mediaType: 'photo',
       quality: 0.7,
+      // Keeps uploads well under the backend's 5MB limit.
+      maxWidth: 1600,
+      maxHeight: 1600,
       saveToPhotos: false,
     });
 
@@ -130,6 +137,8 @@ export default function ReportWasteScreen({ navigation }: Props) {
     const result = await launchImageLibrary({
       mediaType: 'photo',
       quality: 0.7,
+      maxWidth: 1600,
+      maxHeight: 1600,
     });
 
     if (result.didCancel) {
@@ -328,6 +337,12 @@ export default function ReportWasteScreen({ navigation }: Props) {
           state={location}
           onRetry={detectLocation}
         />
+
+        {usingDemoLocation && (
+          <Text style={styles.hintText}>
+            Demo location in use (set in config.ts), not this phone's GPS.
+          </Text>
+        )}
 
         {/* ======================================================
             ADDRESS

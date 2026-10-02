@@ -1,5 +1,5 @@
 {
-  "name": "backend",
+  "name": "swachhlens-ai-backend",
   "version": "1.0.0",
   "description": "AI-Powered Waste Reporting Portal",
   "main": "index.js",

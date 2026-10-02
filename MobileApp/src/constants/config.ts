@@ -1,4 +1,5 @@
 import { Platform } from 'react-native';
+import type { Coordinates } from '../types/complaint';
 
 /**
  * Centralized environment configuration.
@@ -30,6 +31,15 @@ export const SERVER_ORIGIN = (API_HOST_OVERRIDE ?? DEFAULT_API_HOST).replace(
 );
 
 export const API_BASE_URL = `${SERVER_ORIGIN}/api`;
+
+/**
+ * Demo only: report from these coordinates instead of the phone's GPS, so a
+ * live submission at a venue lands next to the seeded data in Lajpat Nagar.
+ * The report screen shows a "demo location" note while this is set.
+ *   e.g. { latitude: 28.5689, longitude: 77.239 }  // Central Market
+ * Leave null for real use.
+ */
+export const DEMO_LOCATION_OVERRIDE: Coordinates | null = null;
 
 export const REQUEST_TIMEOUT_MS = 15000;
 

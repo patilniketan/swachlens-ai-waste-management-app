@@ -44,8 +44,8 @@ export function Login() {
     <div className="login">
       <section>
         <div className="brand">
-          <span className="brand-mark">C</span>
-          Civic<span>Clean</span>
+          <span className="brand-mark">S</span>
+          Swachh<span>Lens</span> AI
         </div>
 
         <div className="login-copy">
@@ -54,13 +54,13 @@ export function Login() {
           <p>Monitor reports, support field teams, and keep every neighbourhood moving.</p>
         </div>
 
-        <div className="login-footer">© 2026 CivicClean · Secure operations portal</div>
+        <div className="login-footer">© 2026 SwachhLens AI · Secure operations portal</div>
       </section>
 
       <main>
         <form onSubmit={handleLogin}>
           <p className="eyebrow">WELCOME BACK</p>
-          <h1>Sign in to CivicClean</h1>
+          <h1>Sign in to SwachhLens AI</h1>
           <p>Use your authorised work account to continue.</p>
 
           {params.get("expired") && !error && (

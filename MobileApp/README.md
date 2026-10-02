@@ -15,6 +15,8 @@ For a physical phone (the usual setup for a live demo):
 3. Set `const API_HOST_OVERRIDE: string | null = 'http://192.168.1.42:5000';` and reload the app.
 4. Check that the phone can reach the backend by opening `http://192.168.1.42:5000/api/health` in the phone's browser. If it doesn't load, allow Node.js through the Windows firewall on Private networks.
 
+**Demoing away from the seeded area?** Set `DEMO_LOCATION_OVERRIDE` in the same file (e.g. `{ latitude: 28.5689, longitude: 77.239 }`, Central Market) so reports land next to the seeded data. The report screen then shows "Demo location in use". Leave it `null` for real use. See [DEMO.md](../DEMO.md).
+
 Debug builds allow plain HTTP. Release builds on Android also need `android:usesCleartextTraffic="true"` on `<application>` (see `android-manifest-additions.xml`).
 
 This is a new [**React Native**](https://reactnative.dev) project, bootstrapped using [`@react-native-community/cli`](https://github.com/react-native-community/cli).

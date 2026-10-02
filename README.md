@@ -1,117 +1,230 @@
-# CivicClean: AI-Powered Waste Management
+# SwachhLens AI
+
+AI-assisted waste reporting for cities.
+- Citizens photograph a pile of waste and submit it from a mobile app.
+- An AI model describes the scene.
+- Fixed, explainable rules set the priority.
+- Likely duplicates are suggested to staff, who confirm them.
+- Municipal staff plan the day's work within real crew capacity, and record clean-up evidence.
 
 | Folder | What it is |
 | --- | --- |
-| `backend/` | Express 5 + Prisma 7 + PostgreSQL API, Gemini for AI analysis |
-| `WebPortal/` | Vite + React admin portal |
-| `MobileApp/` | React Native citizen app (see [MobileApp/README.md](MobileApp/README.md) to point it at your backend) |
+| [`backend/`](backend) | Express 5 + Prisma 7 + PostgreSQL API, Google Gemini (`@google/genai`) |
+| [`WebPortal/`](WebPortal) | React + Vite portal: admin dashboard and a phone-friendly staff view |
+| [`MobileApp/`](MobileApp) | React Native 0.87 citizen app (the `android/` folder must be generated: see below) |
 
-## Backend setup
+The demo kit: [DEMO.md](DEMO.md) (4–5 minute script and failure playbook) and [DOC_CORRECTIONS.md](DOC_CORRECTIONS.md) (fixes for the project PDF).
 
-```bash
-cd backend
-npm install
-cp .env.example .env          # then fill in DATABASE_URL and JWT_SECRET
-npx prisma migrate deploy     # create the schema
-npx prisma db seed            # load demo accounts + simulated complaints
-npx tsx server.ts             # http://localhost:5000/api/health
+## Architecture
+
+```
++-----------------------------+          +--------------------------------------+
+| Citizen app (React Native)  |          | Operations portal (React + Vite)     |
+| report waste, see AI result,|          | admin: list, map, plan, analytics    |
+| track status + history      |          | staff: "My tasks" + after photo      |
++--------------+--------------+          +------------------+-------------------+
+               | JSON / multipart, JWT                      | JSON, JWT, polls every 10s
+               v                                            v
++-----------------------------------------------------------------------------------+
+| Express 5 API  (backend/)        helmet, CORS allowlist, rate limits, Zod         |
+|  routes: /auth  /complaints  /assignments  /admin  /resources                     |
+|                                                                                   |
+|  ai.service ------------> 1 multimodal call: photo + text -> structured features  |
+|      |                    1 call: duplicate judgment (yes / no / unsure)          |
+|      +-- ai.cache         AI_MODE=cached: stored demo answers for known inputs    |
+|  priority.service ------> fixed rules: features -> priority, crew, time, reasons  |
+|  plan.service ----------> greedy daily plan within worker/vehicle minutes         |
+|  event.service ---------> audit trail of every status change and decision         |
+|  analytics.service -----> live aggregates + CSV export                            |
++------------+-------------------------------------------+--------------------------+
+             |                                           |
+             v                                           v
+   Google Gemini API                     PostgreSQL (Prisma 7)       backend/src/uploads/
+   (model: GEMINI_MODEL)                 complaints, events, plans   photos on local disk
 ```
 
-On Neon, run `prisma migrate` commands against the **direct** host (the URL without `-pooler`). The pooled URL is fine for the server and the seed.
+### A complaint's path
 
-## Demo mode
+1. **Submit.** The citizen app sends the description, GPS coordinates, an optional photo and an `Idempotency-Key`, so retries never create duplicates.
+2. **Describe.** One Gemini call reads the photo and text and returns structured features: waste type, relative volume (never kilograms), hazards, blocked road, near a school/hospital/market, a summary of up to 40 words, and confidence.
+3. **Prioritise.** [`priority.service.ts`](backend/src/services/priority.service.ts) scores those features with fixed rules and stores a `priorityReasons` list. The AI never decides priority, crew size or vehicles.
+4. **Find duplicates.** Up to 5 active reports within 500 m are judged yes/no/unsure. The nearest match is stored as a *suggestion*; nothing merges until staff confirm it.
+5. **Handle failure.** If Gemini is unavailable, the complaint is still saved with keyword-only features, `aiSource = fallback` and `needsManualReview = true`.
+6. **Plan, assign, resolve.** Admins generate today's plan, assign staff, and staff complete the work with an after photo and the weighed kilograms. Every step is written to the event timeline.
 
-Two flags in `backend/.env` keep the live demo independent of external services:
+## Setup from scratch
 
-| Flag | Effect |
-| --- | --- |
-| `DEMO_MODE=true` | Signup creates verified accounts immediately (no OTP email). With `false`, users must enter the emailed 6-digit code before they can log in. |
-| `AI_MODE=cached` | Known demo descriptions and seed images get their stored analysis instantly. Anything else goes to Gemini. `AI_MODE=live` sends everything to Gemini. |
+**You need:** Node.js 22.11 or newer, PostgreSQL 15+ (local or [Neon](https://neon.tech)), and Android Studio for the mobile app. A Gemini API key is optional for the demo.
 
-## How a complaint is processed
+### 1. Database
 
-1. **One AI call** (`GEMINI_MODEL`, 8s timeout) reads the photo and description and returns structured features: waste type and categories, relative volume (never kg), condition, hazards, accessibility, equipment, blocked road, near a school/hospital/market, a summary of up to 40 words, and confidence.
-2. **Priority is not decided by the AI.** [`priority.service.ts`](backend/src/services/priority.service.ts) scores the features with fixed rules (hazardous +4, blocked road +3, sensitive site +2, volume +1 to +3, a capped bonus for multiple reports). It stores the priority, crew size, vehicles, time and a `priorityReasons` list explaining each point.
-3. **Duplicates are only suggested.** Up to 5 active complaints within `DUPLICATE_RADIUS_METERS` are judged yes/no/unsure by the AI. The nearest "yes" (or "unsure") is stored as `duplicateSuggestionOfId`. Staff link it with `POST /api/complaints/:id/confirm-duplicate`, which adds the report as a vote and re-scores the original.
-4. **Failures are visible.** If Gemini is unavailable or errors, the complaint is still saved with keyword-only features, `aiSource = fallback` and `needsManualReview = true`, and the error is logged and returned in `ai.errors`.
+Local Postgres:
 
-`aiSource` is one of `gemini`, `cached`, `seed` or `fallback`. Mobile retries send the same `Idempotency-Key` header, so a slow network never creates a complaint twice.
+```sh
+createdb swachhlens
+```
 
-Check a Gemini key with `npm run gemini:smoke` in `backend/`. It makes one real call and prints the result or the exact error.
+On Neon, use the **pooled** connection string for `DATABASE_URL`, and the **direct** one (without `-pooler`) when you run `prisma migrate` commands.
 
-## Admin operations
+### 2. Backend
 
-All of these require an ADMIN token.
+```sh
+cd backend
+```
 
-| Endpoint | What it does |
-| --- | --- |
-| `POST /api/admin/plan/generate` | Builds today's plan (see below). |
-| `GET /api/admin/plan/today` | Returns the stored plan for today. Staff see it as `GET /api/complaints/todays-tasks`. |
-| `PATCH /api/admin/complaints/:id/priority` | Sets a priority by hand. `{ priority, reason }` is required; the override survives re-scoring when votes change. |
-| `GET /api/admin/complaints/:id/events` | The audit trail: created, every status change, assignment, merge, duplicate confirm/reject, priority override, with who did it and why. |
-| `GET /api/admin/analytics` | Live aggregates: counts by status and waste type, created vs resolved over the last 7 days, average resolution hours, duplicate suggestions confirmed/rejected/pending, and AI volume estimate vs weighed kg. |
-| `GET /api/admin/reports/export.csv` | Complaint export. It contains no reporter emails, and an `isSimulated` column keeps demo data labelled. |
-| `GET /api/admin/complaints?take=25&skip=0&status=Pending` | Paginated complaint list (`take` at most 100). |
+```sh
+npm install
+```
 
-Analytics and the export accept `?includeSimulated=false` to use real data only. Analytics always reports how many rows are simulated in `dataset`.
+```sh
+cp .env.example .env
+```
 
-**How the plan works.** Today's capacity is `workers × SHIFT_MINUTES` worker-minutes and `heavyVehicles × SHIFT_MINUTES` vehicle-minutes, taken from today's (UTC) Resource row.
-1. Work that is already assigned or in progress is reserved first.
-2. Pending, unassigned complaints are taken in order of urgency, then votes, then age, as long as their `requiredWorkers × estimatedTimeMinutes` (and vehicle time) still fits.
-3. Everything else is deferred with a reason, such as "Not enough crew time left" or "Needs 5 workers at once; only 4 on duty".
+Edit `.env`: set at least `DATABASE_URL` and `JWT_SECRET`. For a demo, keep `AI_MODE=cached` and `DEMO_MODE=true`. Then:
 
-The plan never exceeds capacity. If already-assigned work alone exceeds it, the plan says so in `warnings`.
+```sh
+npx prisma migrate deploy
+```
 
-**Completing a task.** Staff send `PATCH /api/assignments/:id/status` as multipart with `status=COMPLETED`, `verifiedWeightKg`, optional `resolutionNotes`, and the after photo in the `afterImage` field. Tasks only move forward: ASSIGNED, then IN_PROGRESS, then COMPLETED.
+```sh
+npx prisma db seed
+```
 
-## Evaluating the AI
+```sh
+npx tsx server.ts
+```
 
-`npm run eval` in `backend/` scores the **real** Gemini duplicate judge and the analysis + priority scorer against hand-labelled rows in [`backend/eval/`](backend/eval/README.md). It reports:
-- duplicate precision, recall and F1
-- a priority confusion matrix and accuracy
-- mean latency per AI call
+Check: http://localhost:5000/api/health. To check a Gemini key: `npm run gemini:smoke`.
 
-Results go to `backend/eval/results.json`, which the portal's Analytics page shows as an "Evaluation" card.
+### 3. Web portal
 
-- The `[EXAMPLE]` rows only show the format; they are skipped unless you pass `--include-examples`.
-- Fewer than 20 evaluated rows is flagged as not statistically meaningful.
-- Failed AI calls are reported and left out of the metrics, never counted as predictions. A run with no successful calls doesn't write a results file.
-- It needs a working `GEMINI_API_KEY`; the demo cache is never used.
+```sh
+cd WebPortal
+```
 
-## Security defaults
+```sh
+npm install
+```
 
-- **Who can read what.** Citizens can read only their own complaints (others return 404) and never see reporter emails or staff IDs. `/nearby` and `/hotspots` return no user identifiers. Changing or verifying a complaint requires STAFF or ADMIN.
-- **Validation.** Every request body is validated with Zod (`backend/src/validation/schemas.ts`). Unknown fields on staff endpoints are rejected.
-- **Uploads.** JPEG, PNG or WebP only, at most 5MB. The file's bytes must match its declared type. Files are saved under a random UUID with an extension taken from the type, never from the client's filename.
-- **Rate limits** (per IP unless noted, all configurable in `.env`):
+```sh
+npm run dev
+```
 
-  | Scope | Default |
-  | --- | --- |
-  | All `/api` | 1000 per 15 min |
-  | `/api/auth/*` | 10 per 15 min |
-  | Creating complaints | 20 per hour per user |
+Open http://localhost:5173. Set `VITE_API_URL` in `WebPortal/.env.local` if the API is not at `http://localhost:5000/api`.
 
-  **For a live demo**, everyone on venue Wi-Fi may share one IP. Raise `AUTH_RATE_LIMIT_MAX` beforehand, and set `TRUST_PROXY=1` if the API runs behind a tunnel.
-- **CORS.** Browsers may call the API only from origins listed in `CORS_ORIGINS` (default `http://localhost:5173`). The mobile app is not affected.
-- **Errors.** 500 responses carry only a generic message. Details are logged on the server.
+### 4. Mobile app
+
+1. Generate `android/` (the exact commands are in [MobileApp/README.md](MobileApp/README.md#android-regenerating-the-android-folder)).
+2. Set `API_HOST_OVERRIDE` in [`MobileApp/src/constants/config.ts`](MobileApp/src/constants/config.ts) to your computer's LAN address, e.g. `'http://192.168.1.42:5000'`.
+3. Run:
+
+```sh
+cd MobileApp
+```
+
+```sh
+npm install
+```
+
+```sh
+npm run android
+```
 
 ## Demo accounts
 
-Created by `npx prisma db seed`. **Demo use only**: anyone reading this file knows these passwords, so never use them on a deployment holding real data.
+Created by `npx prisma db seed`. **Demo use only**: anyone reading this file knows these passwords.
 
 | Role | Email | Password |
 | --- | --- | --- |
-| Admin | `admin@civicclean.demo` | `CivicDemo#2026` |
-| Staff | `staff1@civicclean.demo`, `staff2@civicclean.demo`, `staff3@civicclean.demo` | `CivicDemo#2026` |
-| Citizen | `citizen1@civicclean.demo`, `citizen2@civicclean.demo`, `citizen3@civicclean.demo` | `CivicDemo#2026` |
+| Admin | `admin@swachhlens.demo` | `SwachhDemo#2026` |
+| Field staff | `staff1@swachhlens.demo`, `staff2@swachhlens.demo`, `staff3@swachhlens.demo` | `SwachhDemo#2026` |
+| Citizen (mobile app) | `citizen1@swachhlens.demo`, `citizen2@swachhlens.demo`, `citizen3@swachhlens.demo` | `SwachhDemo#2026` |
 
-## Seeded data is simulated
+Admins land on the dashboard; staff land on "My tasks". Citizens use the mobile app; the portal refuses them.
 
-The seed creates 47 complaints across 35 incidents in Lajpat Nagar, South Delhi (approximate locations), including 9 groups of near-duplicate reports, 5 CRITICAL incidents, and 11 resolved complaints with a staff-entered weight and an "after" photo. **All of it is simulated**: the images are labelled placeholders, and the weights and AI outputs are hand-written demo values. These rows have `isSimulated = true`, and any UI that shows them must label them "simulated". Re-running the seed replaces only simulated rows.
+### Seeded data is simulated
 
-The data lives in [`backend/src/demo/demoData.ts`](backend/src/demo/demoData.ts). The same file drives `AI_MODE=cached`, so for an instant live demo, submit one of these near Lajpat Nagar Central Market (about 28.5689, 77.2390):
+The seed creates 47 complaints across 35 incidents in Lajpat Nagar, South Delhi (approximate locations). They include 9 groups of duplicate reports, 5 CRITICAL incidents, 11 resolved complaints with a weighed amount and an "after" photo, and 130 history events.
 
-- *"Bins behind Central Market overflowing again, garbage spread across the lane and dogs everywhere."* is detected as a duplicate of an existing report, and that incident's vote count goes up.
-- *"Huge pile of construction rubble dumped overnight in front of the Central Market parking gate, cars cannot get in or out."* is a new CRITICAL report.
+**All of it is simulated.** The images are labelled placeholders, and the weights and AI features are hand-written demo values. These rows have `isSimulated = true`; the portal and app label them "Simulated", and analytics reports how much data is simulated and can exclude it. Re-running the seed replaces only simulated rows.
 
-Attaching the matching image from `backend/src/uploads/seed/` (`mixed-garbage.png`, `construction-debris.png`) also returns cached image analysis.
+## Environment variables
+
+Backend (`backend/.env`; [`.env.example`](backend/.env.example) lists exactly these):
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `DATABASE_URL` | required | PostgreSQL connection string |
+| `JWT_SECRET` | required | Signs login tokens (7-day expiry) and keys the OTP hashes |
+| `PORT` | `5000` | API port |
+| `NODE_ENV` | `development` | `production` makes email delivery mandatory |
+| `CORS_ORIGINS` | `http://localhost:5173` | Comma-separated browser origins allowed to call the API |
+| `TRUST_PROXY` | `0` | Number of proxies in front of the API (set `1` behind a tunnel) |
+| `ENABLE_REQUEST_LOGGING` | `true` | Per-request logs |
+| `GENERAL_RATE_LIMIT_MAX` | `1000` | Requests per IP per 15 min, all `/api` |
+| `AUTH_RATE_LIMIT_MAX` | `10` | Requests per IP per 15 min on `/api/auth/*` |
+| `COMPLAINT_RATE_LIMIT_MAX` | `20` | Complaints per user per hour |
+| `GEMINI_API_KEY` | empty | Without it, uncached input falls back to keyword rules plus manual review |
+| `GEMINI_MODEL` | `gemini-3.6-flash` | Gemini model id |
+| `AI_MODE` | `live` | `cached` = stored demo answers for known demo inputs, everything else live |
+| `DEMO_MODE` | `false` | `true` = signup without OTP, accounts verified immediately |
+| `EMAIL_USER`, `EMAIL_PASSWORD` | empty | Gmail account for OTP mail; outside production, codes go to the server log when unset |
+| `MAX_FILE_SIZE` | `5242880` | Upload limit in bytes (can only lower the 5 MB cap) |
+| `HOTSPOT_RADIUS_METERS` | `500` | Hotspot clustering radius |
+| `DUPLICATE_RADIUS_METERS` | `500` | Duplicate-candidate search radius |
+| `DEFAULT_WORKERS`, `DEFAULT_HEAVY_VEHICLES` | `15`, `5` | Crew used when no Resource row exists for today |
+| `SHIFT_MINUTES` | `480` | Shift length used for plan capacity |
+
+Portal (`WebPortal/.env.local`): `VITE_API_URL`, default `http://localhost:5000/api`.
+
+Mobile (constants in [`config.ts`](MobileApp/src/constants/config.ts), not env vars):
+- `API_HOST_OVERRIDE`: backend address.
+- `DEMO_LOCATION_OVERRIDE`: fixed coordinates for a demo away from the seeded area. It is labelled on screen.
+
+## How the parts work
+
+- **Priority rules:** hazardous material +4, blocking a road +3, near a school/hospital/market +2, volume Massive/Large/Medium +3/+2/+1, and +1/+2 when 3+/6+ citizens report it. Urgency = 1 + points; CRITICAL ≥ 7, STANDARD ≥ 3. An admin can override the priority with a mandatory reason, which survives re-scoring.
+- **Today's plan:**
+  - Capacity is workers × shift minutes and heavy vehicles × shift minutes.
+  - Work that is already assigned is reserved first.
+  - Pending complaints are then taken by urgency, then votes, then age, as long as they fit. Each deferral comes with a reason, and capacity is never exceeded.
+- **Audit trail:** a `ComplaintEvent` row is written for every status change, assignment, merge, duplicate confirm or reject, and priority override.
+- **Analytics:** computed live from the database. It covers status and waste-type counts, the last 7 days, average resolution time, and duplicate decisions. It also compares the AI's relative-volume estimate with the kilograms staff actually weighed.
+- **Evaluation:** `npm run eval` (backend) scores the real Gemini judge and scorer against hand-labelled rows in [`backend/eval/`](backend/eval/README.md). The portal shows the latest run. No real evaluation has been run yet.
+
+## Security defaults
+
+- **Access control:** citizens see only their own complaints and never reporter emails or staff IDs. Editing, verifying and assigning are staff/admin only.
+- **Validation:** every request body is validated with Zod.
+- **Uploads:** JPEG, PNG or WebP up to 5 MB, checked by their actual bytes, and stored under random names.
+- **Rate limits** and a **CORS** allowlist. 500 errors return a generic message; the details go to the server log.
+- **OTP codes** (when `DEMO_MODE=false`) are random and stored only as an HMAC hash. Each code allows 5 attempts, and every failure gets the same generic message.
+
+## Useful commands
+
+| Where | Command | Does |
+| --- | --- | --- |
+| backend | `npx tsx server.ts` / `npm run dev` | Run the API |
+| backend | `npx prisma migrate deploy` | Apply migrations |
+| backend | `npx prisma db seed` | Reset demo accounts and simulated data |
+| backend | `npm run build` | Type-check and compile |
+| backend | `npm run gemini:smoke` | One real Gemini call: prints the result or the exact error |
+| backend | `npm run eval` | Evaluation harness |
+| WebPortal | `npm run dev` / `npm run build` | Portal dev server / production build |
+| MobileApp | `npm test` / `npx tsc --noEmit` | Jest tests / type check |
+
+## Known limitations / not built
+
+- **No real-time push.** The portal polls (10 s for lists, 30 s for staff tasks) and the app refreshes when a screen opens. There are no push notifications or WebSockets.
+- **No recycler marketplace.** An unfinished marketplace was removed; it is not part of the product.
+- **The Android project must be regenerated** from the React Native template, and the Nearby map needs a Google Maps API key. The `ios/` folder exists but has not been built or tested.
+- **AI accuracy is measured only on the evaluation set**, and that set currently holds only format examples. No accuracy figure has been established yet. The configured Gemini model id has not been verified against the live API in the development environment (no key was available); run `npm run gemini:smoke`.
+- **Demo data is simulated** (see above). Any numbers in a demo reflect seeded data unless the "Real reports only" view is used.
+- **Accounts:** no password reset, account deletion or data export. A role change takes effect when the user's token expires (up to 7 days).
+- **Rate limits** are in memory: per process, and reset on restart.
+- **Photos** are stored on the API server's disk and served from public, unguessable URLs. There is no object storage or signed URLs. Eight photos from early testing are still tracked in git.
+- **No API to edit daily resources** (workers and vehicles); change them in the database. "Today" is a UTC day.
+- **Hotspots** are simple 500 m greedy clusters, not a clustering algorithm such as DBSCAN.
+- **No automated backend test suite.** The backend was verified with scripted API calls during development; only the mobile app has Jest tests.
+- **English only**, and the portal ships as one bundle (about 1 MB, no code splitting).
+- **Latency** depends on the database's distance: each query to a remote Postgres (e.g. Neon in another region) costs about 250 ms.

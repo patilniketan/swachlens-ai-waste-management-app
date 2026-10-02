@@ -29,16 +29,16 @@ import {
 } from "../src/generated/prisma/client.js";
 
 // Demo-only credentials, documented in README.md. Never reuse for real accounts.
-const DEMO_PASSWORD = "CivicDemo#2026";
+const DEMO_PASSWORD = "SwachhDemo#2026";
 
 const DEMO_USERS: { email: string; role: Role }[] = [
-  { email: "admin@civicclean.demo", role: "ADMIN" },
-  { email: "staff1@civicclean.demo", role: "STAFF" },
-  { email: "staff2@civicclean.demo", role: "STAFF" },
-  { email: "staff3@civicclean.demo", role: "STAFF" },
-  { email: "citizen1@civicclean.demo", role: "CITIZEN" },
-  { email: "citizen2@civicclean.demo", role: "CITIZEN" },
-  { email: "citizen3@civicclean.demo", role: "CITIZEN" },
+  { email: "admin@swachhlens.demo", role: "ADMIN" },
+  { email: "staff1@swachhlens.demo", role: "STAFF" },
+  { email: "staff2@swachhlens.demo", role: "STAFF" },
+  { email: "staff3@swachhlens.demo", role: "STAFF" },
+  { email: "citizen1@swachhlens.demo", role: "CITIZEN" },
+  { email: "citizen2@swachhlens.demo", role: "CITIZEN" },
+  { email: "citizen3@swachhlens.demo", role: "CITIZEN" },
 ];
 
 const HOUR = 60 * 60 * 1000;
@@ -92,6 +92,14 @@ async function seedUsers() {
   const users = [];
 
   for (const { email, role } of DEMO_USERS) {
+    // Demo accounts used to be @civicclean.demo (the project's earlier name):
+    // rename them in place so a re-seed does not leave duplicates behind.
+    const legacyEmail = email.replace("@swachhlens.demo", "@civicclean.demo");
+
+    if (!(await prisma.user.findUnique({ where: { email } }))) {
+      await prisma.user.updateMany({ where: { email: legacyEmail }, data: { email } });
+    }
+
     const data = {
       password: passwordHash,
       role,

@@ -1,5 +1,5 @@
 /**
- * CivicClean — citizen mobile app
+ * SwachhLens AI — citizen mobile app
  * App.tsx stays intentionally thin: it only mounts the safe-area provider
  * and the RootNavigator, which itself decides between AuthNavigator and
  * AppNavigator based on whether a session exists.

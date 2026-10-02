@@ -23,7 +23,7 @@ export function Profile() {
         <Avatar name={emailName(user?.email)} />
         <div>
           <h2>{user?.email}</h2>
-          <p>{user ? ROLE_LABEL[user.role] : ""} · CivicClean</p>
+          <p>{user ? ROLE_LABEL[user.role] : ""} · SwachhLens AI</p>
         </div>
       </div>
       <article className="security-card">

@@ -17,7 +17,7 @@ export const login = async (payload: LoginPayload): Promise<AuthUser> => {
   const { user, token } = response.data.data;
 
   if (!PORTAL_ROLES.includes(user.role)) {
-    throw new Error("This portal is for municipal staff. Citizens can report waste in the CivicClean app.");
+    throw new Error("This portal is for municipal staff. Citizens can report waste in the SwachhLens AI app.");
   }
 
   saveSession(token, user);

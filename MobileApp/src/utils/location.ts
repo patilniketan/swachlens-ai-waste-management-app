@@ -2,6 +2,10 @@ import { Platform } from 'react-native';
 import Geolocation from '@react-native-community/geolocation';
 import { check, request, PERMISSIONS, RESULTS } from 'react-native-permissions';
 import type { Coordinates } from '../types/complaint';
+import { DEMO_LOCATION_OVERRIDE } from '../constants/config';
+
+/** True when reports use the configured demo location, not GPS. */
+export const usingDemoLocation = DEMO_LOCATION_OVERRIDE !== null;
 
 const LOCATION_PERMISSION = Platform.select({
   android: PERMISSIONS.ANDROID.ACCESS_FINE_LOCATION,
@@ -24,6 +28,10 @@ export async function ensureLocationPermission(): Promise<LocationPermissionStat
 }
 
 export function getCurrentCoordinates(): Promise<Coordinates> {
+  if (DEMO_LOCATION_OVERRIDE) {
+    return Promise.resolve({ ...DEMO_LOCATION_OVERRIDE });
+  }
+
   return new Promise((resolve, reject) => {
     Geolocation.getCurrentPosition(
       (position) => {

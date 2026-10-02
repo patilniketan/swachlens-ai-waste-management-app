@@ -22,7 +22,7 @@ export const timeAgo = (date: Date | null, now = Date.now()) => {
   return `${Math.round(seconds / 3600)} h ago`;
 };
 
-// Name-like label from an email: "staff1@civicclean.demo" -> "staff1"
+// Name-like label from an email: "staff1@swachhlens.demo" -> "staff1"
 export const emailName = (email: string | null | undefined) => email?.split("@")[0] ?? "—";
 
 export const percent = (part: number, total: number) =>
