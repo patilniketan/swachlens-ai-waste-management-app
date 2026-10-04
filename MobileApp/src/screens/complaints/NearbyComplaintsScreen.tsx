@@ -1,8 +1,7 @@
 
 import React, { useCallback, useState } from 'react';
 import {
-  ActivityIndicator,
-  RefreshControl,
+  ActivityIndicator,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -52,7 +51,7 @@ const DEFAULT_DELTA = {
   longitudeDelta: 0.08,
 };
 
-const HOTSPOT_RADIUS_METERS = 500;
+const DEFAULT_HOTSPOT_RADIUS_METERS = 500;
 
 function getLevelColor(level: HotspotLevel) {
   switch (level) {
@@ -88,9 +87,7 @@ function getLevelLabel(level: HotspotLevel) {
   }
 }
 
-export default function NearbyComplaintsScreen({
-  navigation,
-}: Props) {
+export default function NearbyComplaintsScreen(_props: Props) {
   const [state, setState] = useState<ViewState>({
     status: 'loading',
   });
@@ -240,13 +237,13 @@ export default function NearbyComplaintsScreen({
             <React.Fragment
               key={`${hotspot.latitude}-${hotspot.longitude}-${index}`}
             >
-              {/* 500m hotspot area */}
+              {/* hotspot clustering area */}
               <Circle
                 center={{
                   latitude: hotspot.latitude,
                   longitude: hotspot.longitude,
                 }}
-                radius={HOTSPOT_RADIUS_METERS}
+                radius={hotspot.radiusMeters ?? DEFAULT_HOTSPOT_RADIUS_METERS}
                 strokeWidth={2}
                 strokeColor={`${markerColor}80`}
                 fillColor={`${markerColor}20`}
@@ -260,19 +257,6 @@ export default function NearbyComplaintsScreen({
                 }}
                 pinColor={markerColor}
                 tracksViewChanges={false}
-                onCalloutPress={() => {
-                  const firstComplaintId =
-                    hotspot.complaintIds?.[0];
-
-                  if (firstComplaintId) {
-                    navigation.navigate(
-                      'ComplaintDetails',
-                      {
-                        id: firstComplaintId,
-                      },
-                    );
-                  }
-                }}
               >
                 <View
                   style={[
@@ -309,11 +293,6 @@ export default function NearbyComplaintsScreen({
                       Votes: {hotspot.totalVotes}
                     </Text>
 
-                    <Text style={styles.calloutText}>
-                      Verified waste:{' '}
-                      {hotspot.totalVerifiedWeightKg} kg
-                    </Text>
-
                     {hotspot.wasteTypes?.length > 0 && (
                       <Text style={styles.calloutText}>
                         Waste:{' '}
@@ -321,8 +300,16 @@ export default function NearbyComplaintsScreen({
                       </Text>
                     )}
 
+                    {hotspot.simulatedCount > 0 && (
+                      <Text style={styles.calloutText}>
+                        Simulated demo reports: {hotspot.simulatedCount}
+                      </Text>
+                    )}
+
+                    {/* Citizens can only open their own complaints, so the
+                        callout is informational. */}
                     <Text style={styles.calloutHint}>
-                      Tap to view a complaint
+                      Reports in this area
                     </Text>
                   </View>
                 </Callout>

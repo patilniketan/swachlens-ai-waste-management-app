@@ -1,20 +1,15 @@
 import type { NextFunction, Request, Response } from "express";
 import jwt from "jsonwebtoken";
 
-const JWT_SECRET = process.env.JWT_SECRET;
-
-if (!JWT_SECRET) {
+if (!process.env.JWT_SECRET) {
   throw new Error("JWT_SECRET is not defined");
 }
+
+const JWT_SECRET: string = process.env.JWT_SECRET;
 
 export interface AuthRequest extends Request {
   userId?: string;
   userRole?: string;
-}
-
-interface DecodedToken {
-  userId: string;
-  role: string;
 }
 
 export const authenticate = (
@@ -32,9 +27,17 @@ export const authenticate = (
       });
     }
 
-    const token = authHeader.split(" ")[1];
+    const token = authHeader.slice("Bearer ".length);
 
-    const decoded = jwt.verify(token, JWT_SECRET) as DecodedToken;
+    const decoded = jwt.verify(token, JWT_SECRET);
+
+    if (
+      typeof decoded === "string" ||
+      typeof decoded.userId !== "string" ||
+      typeof decoded.role !== "string"
+    ) {
+      throw new Error("Malformed token payload");
+    }
 
     req.userId = decoded.userId;
     req.userRole = decoded.role;

@@ -8,13 +8,17 @@ import { resolveImageUrl } from '../../services/api';
 import Loading from '../../components/Loading';
 import EmptyState from '../../components/EmptyState';
 import StatusBadge from '../../components/StatusBadge';
+import SimulatedTag from '../../components/SimulatedTag';
 import { colors } from '../../constants/colors';
 import { radius, shadow, spacing, typography } from '../../constants/spacing';
-import type { Complaint, ComplaintStatus } from '../../types/complaint';
+import { STATUS_LABELS, type Complaint } from '../../types/complaint';
+import {
+  PROGRESS_STEPS,
+  describeEvent,
+  stepDates,
+} from '../../utils/complaintView';
 
 type Props = NativeStackScreenProps<ComplaintsStackParamList, 'ComplaintDetails'>;
-
-const STAGES: ComplaintStatus[] = ['Pending', 'Assigned', 'In Progress', 'Resolved'];
 
 function formatDateTime(iso: string): string {
   try {
@@ -70,7 +74,11 @@ export default function ComplaintDetailsScreen({ route }: Props) {
   }
 
   const imageUrl = resolveImageUrl(complaint.imageUrl);
-  const currentStageIndex = STAGES.indexOf(complaint.status);
+  const afterUrl = resolveImageUrl(complaint.afterImageUrl);
+  const currentStageIndex = PROGRESS_STEPS.indexOf(complaint.status);
+  const reachedAt = stepDates(complaint.timeline);
+  const history = complaint.timeline ?? [];
+  const isLinked = complaint.status === 'Linked' || complaint.status === 'Merged';
 
   return (
     <ScrollView style={styles.container} contentContainerStyle={styles.content}>
@@ -88,6 +96,7 @@ export default function ComplaintDetailsScreen({ route }: Props) {
           <StatusBadge status={complaint.status} />
         </View>
         <Text style={styles.idText}>Complaint #{complaint.id.slice(0, 8)}</Text>
+        {complaint.isSimulated && <SimulatedTag />}
 
         <Text style={styles.sectionLabel}>Description</Text>
         <Text style={styles.bodyText}>{complaint.description}</Text>
@@ -107,40 +116,106 @@ export default function ComplaintDetailsScreen({ route }: Props) {
         </View>
       </View>
 
-      <View style={styles.card}>
-        <Text style={styles.sectionLabel}>Status Timeline</Text>
-        <View style={styles.timeline}>
-          {STAGES.map((stage, index) => {
-            const isComplete = index <= currentStageIndex;
-            const isLast = index === STAGES.length - 1;
-            return (
-              <View key={stage} style={styles.timelineRow}>
-                <View style={styles.timelineIndicatorCol}>
-                  <View
-                    style={[
-                      styles.timelineDot,
-                      isComplete && styles.timelineDotActive,
-                    ]}
-                  />
-                  {!isLast && (
-                    <View
-                      style={[
-                        styles.timelineLine,
-                        index < currentStageIndex && styles.timelineLineActive,
-                      ]}
-                    />
-                  )}
-                </View>
-                <Text
-                  style={[styles.timelineLabel, isComplete && styles.timelineLabelActive]}
-                >
-                  {stage}
-                </Text>
-              </View>
-            );
-          })}
+      {isLinked && (
+        <View style={[styles.card, styles.noticeCard]}>
+          <Text style={styles.noticeTitle}>Combined with an existing report</Text>
+          <Text style={styles.noticeText}>
+            Staff confirmed this is the same problem as an earlier report, so they are handled
+            together and your report counts as an extra vote.
+          </Text>
         </View>
-      </View>
+      )}
+
+      {complaint.status === 'Rejected' && (
+        <View style={[styles.card, styles.noticeCard]}>
+          <Text style={styles.noticeTitle}>Closed without action</Text>
+          <Text style={styles.noticeText}>Staff reviewed this report and closed it.</Text>
+        </View>
+      )}
+
+      {!isLinked && complaint.status !== 'Rejected' && (
+        <View style={styles.card}>
+          <Text style={styles.sectionLabel}>Progress</Text>
+          <View style={styles.timeline}>
+            {PROGRESS_STEPS.map((stage, index) => {
+              const isComplete = index <= currentStageIndex;
+              const isLast = index === PROGRESS_STEPS.length - 1;
+              const date = reachedAt[stage];
+              return (
+                <View key={stage} style={styles.timelineRow}>
+                  <View style={styles.timelineIndicatorCol}>
+                    <View style={[styles.timelineDot, isComplete && styles.timelineDotActive]} />
+                    {!isLast && (
+                      <View
+                        style={[
+                          styles.timelineLine,
+                          index < currentStageIndex && styles.timelineLineActive,
+                        ]}
+                      />
+                    )}
+                  </View>
+                  <View style={styles.timelineTextCol}>
+                    <Text style={[styles.timelineLabel, isComplete && styles.timelineLabelActive]}>
+                      {STATUS_LABELS[stage]}
+                    </Text>
+                    {isComplete && !!date && (
+                      <Text style={styles.timelineDate}>{formatDateTime(date)}</Text>
+                    )}
+                  </View>
+                </View>
+              );
+            })}
+          </View>
+        </View>
+      )}
+
+      {complaint.status === 'Resolved' && (
+        <View style={styles.card}>
+          <Text style={styles.sectionLabel}>Cleaned up</Text>
+          {afterUrl ? (
+            <Image
+              source={{ uri: afterUrl }}
+              style={styles.afterImage}
+              resizeMode="cover"
+              accessibilityLabel="Photo of the site after clean-up"
+            />
+          ) : (
+            <Text style={styles.bodyTextSmall}>No after photo was recorded.</Text>
+          )}
+          <View style={styles.dateRow}>
+            {!!complaint.resolvedAt && (
+              <View style={styles.dateCol}>
+                <Text style={styles.sectionLabel}>Resolved</Text>
+                <Text style={styles.bodyTextSmall}>{formatDateTime(complaint.resolvedAt)}</Text>
+              </View>
+            )}
+            {complaint.verifiedWeightKg != null && (
+              <View style={styles.dateCol}>
+                <Text style={styles.sectionLabel}>Collected</Text>
+                <Text style={styles.bodyTextSmall}>{complaint.verifiedWeightKg} kg (weighed)</Text>
+              </View>
+            )}
+          </View>
+          {!!complaint.resolutionNotes && (
+            <>
+              <Text style={styles.sectionLabel}>Notes from the team</Text>
+              <Text style={styles.bodyText}>{complaint.resolutionNotes}</Text>
+            </>
+          )}
+        </View>
+      )}
+
+      {history.length > 0 && (
+        <View style={styles.card}>
+          <Text style={styles.sectionLabel}>History</Text>
+          {history.map((event, index) => (
+            <View key={`${event.type}-${event.createdAt}-${index}`} style={styles.historyRow}>
+              <Text style={styles.historyText}>{describeEvent(event)}</Text>
+              <Text style={styles.timelineDate}>{formatDateTime(event.createdAt)}</Text>
+            </View>
+          ))}
+        </View>
+      )}
     </ScrollView>
   );
 }
@@ -241,10 +316,45 @@ const styles = StyleSheet.create({
   timelineLabel: {
     ...typography.body,
     color: colors.textMuted,
-    marginLeft: spacing.md,
   },
   timelineLabelActive: {
     color: colors.textPrimary,
     fontWeight: '600',
+  },
+  timelineTextCol: {
+    marginLeft: spacing.md,
+    flex: 1,
+  },
+  timelineDate: {
+    ...typography.caption,
+    color: colors.textMuted,
+    marginTop: 2,
+  },
+  noticeCard: {
+    backgroundColor: colors.infoBg,
+  },
+  noticeTitle: {
+    ...typography.bodyMedium,
+    color: colors.info,
+    marginBottom: spacing.xs,
+  },
+  noticeText: {
+    ...typography.caption,
+    color: colors.textPrimary,
+  },
+  afterImage: {
+    width: '100%',
+    height: 200,
+    borderRadius: radius.md,
+    backgroundColor: colors.divider,
+  },
+  historyRow: {
+    paddingVertical: spacing.sm,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.divider,
+  },
+  historyText: {
+    ...typography.caption,
+    color: colors.textPrimary,
   },
 });

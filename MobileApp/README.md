@@ -1,4 +1,72 @@
+# Connecting to the backend
+
+The API address is set in one place: `API_HOST_OVERRIDE` in [`src/constants/config.ts`](src/constants/config.ts).
+
+| Where the app runs | What to set |
+| --- | --- |
+| Android emulator | leave `null` (uses `http://10.0.2.2:5000`) |
+| iOS simulator | leave `null` (uses `http://localhost:5000`) |
+| Physical phone | `'http://<your-computer-LAN-IP>:5000'` |
+
+For a physical phone (the usual setup for a live demo):
+
+1. Put the phone and the computer running the backend on the same Wi-Fi network.
+2. Find the computer's LAN IP: run `ipconfig` on Windows and read the "IPv4 Address" (for example `192.168.1.42`), or run `ipconfig getifaddr en0` on macOS.
+3. Set `const API_HOST_OVERRIDE: string | null = 'http://192.168.1.42:5000';` and reload the app.
+4. Check that the phone can reach the backend by opening `http://192.168.1.42:5000/api/health` in the phone's browser. If it doesn't load, allow Node.js through the Windows firewall on Private networks.
+
+**Demoing away from the seeded area?** Set `DEMO_LOCATION_OVERRIDE` in the same file (e.g. `{ latitude: 28.5689, longitude: 77.239 }`, Central Market) so reports land next to the seeded data. The report screen then shows "Demo location in use". Leave it `null` for real use. See [DEMO.md](../DEMO.md).
+
+Debug builds allow plain HTTP. Release builds on Android also need `android:usesCleartextTraffic="true"` on `<application>` (see `android-manifest-additions.xml`).
+
 This is a new [**React Native**](https://reactnative.dev) project, bootstrapped using [`@react-native-community/cli`](https://github.com/react-native-community/cli).
+
+# Android: regenerating the `android/` folder
+
+`android/` is not in this repository. Generate a fresh one with the same React Native version and the same app name, then copy it in. Don't hand-write the native project.
+
+1. From the repository root, generate a throwaway project. The name must be `MobileApp` (it matches `app.json`, which the native code registers):
+
+   ```sh
+   npx @react-native-community/cli@20.2.0 init MobileApp --version 0.87.0 --directory rn-template-tmp --skip-install --skip-git-init
+   ```
+
+2. Copy its `android/` folder into this app, then delete the temp project:
+
+   ```sh
+   cp -r rn-template-tmp/android MobileApp/android
+   ```
+
+   ```sh
+   rm -rf rn-template-tmp
+   ```
+
+   In PowerShell: `Copy-Item -Recurse rn-template-tmp\android MobileApp\android`, then `Remove-Item -Recurse -Force rn-template-tmp`.
+
+3. Edit `MobileApp/android/app/src/main/AndroidManifest.xml` using [`android-manifest-additions.xml`](android-manifest-additions.xml):
+   - Add the `INTERNET`, `CAMERA`, `ACCESS_FINE_LOCATION` and `ACCESS_COARSE_LOCATION` permissions above `<application>`.
+   - Add `<uses-feature android:name="android.hardware.camera" android:required="false" />`.
+   - **Required for the Nearby map:** add a Google Maps API key `<meta-data>` inside `<application>`. `react-native-maps` uses Google Maps on Android and the app crashes when that screen opens without a key.
+
+4. From `MobileApp/`, install and run:
+
+   ```sh
+   npm install
+   ```
+
+   ```sh
+   npm run android
+   ```
+
+The template's package id is `com.mobileapp`. To use another one, add `--package-name com.your.id` to the `init` command.
+
+## Plain HTTP to a LAN backend
+
+The demo backend is plain `http://<LAN-IP>:5000`. Android blocks cleartext HTTP by default:
+
+- **Debug builds** (`npm run android`) already allow it; the React Native template enables cleartext for the debug variant.
+- **Release builds** need it enabled explicitly: add `android:usesCleartextTraffic="true"` to `<application>`, or, more narrowly, a `network_security_config` that allows cleartext only for your backend's IP.
+- With a USB-connected phone you can skip the LAN IP: run `adb reverse tcp:5000 tcp:5000` and set `API_HOST_OVERRIDE` to `'http://localhost:5000'`.
 
 # Getting Started
 

@@ -1,23 +1,214 @@
+import fs from "fs/promises";
+import { performance } from "perf_hooks";
 import prisma from "../config/prisma.js";
 import {
-  analyzePriority,
-  analyzeSentiment,
-  detectDuplicate,
-  extractComplaintData,
+  analyzeComplaint,
+  judgeDuplicates,
+  type DuplicateCandidate,
+  type DuplicateJudgment,
 } from "./ai.service.js";
+import { rescoreComplaint, scorePriority } from "./priority.service.js";
+import { recordEvents, statusChangeEvent } from "./event.service.js";
 import { calculateDistance } from "../utils/distance.js";
+import { HttpError } from "../utils/httpError.js";
+import { getTodayPlan } from "./plan.service.js";
+import {
+  ACTIVE_STATUSES,
+  COMPLAINT_STATUSES,
+  DUPLICATE_RADIUS_METERS,
+  HOTSPOT_RADIUS_METERS,
+  PRIORITIES,
+  type ComplaintStatus,
+  type Priority,
+} from "../constants/complaint.js";
+import type {
+  AiSource,
+  Complaint,
+  Prisma,
+} from "../generated/prisma/client.js";
 
 interface CreateComplaintInput {
   text: string;
-  address?: string;
+  address?: string | undefined;
   latitude: number;
   longitude: number;
   userId: string;
-  imageUrl?: string;
+  imageUrl?: string | undefined;
+  imagePath?: string | undefined;
+  imageMimeType?: string | undefined;
+  idempotencyKey?: string | undefined;
 }
+
+const MAX_DUPLICATE_CANDIDATES = 5;
+
+const METRES_PER_DEGREE_LAT = 111_320;
+
+const complaintWithReporter = {
+  User: {
+    select: {
+      id: true,
+      email: true,
+      role: true,
+    },
+  },
+} satisfies Prisma.ComplaintInclude;
+
+type ComplaintWithReporter = Prisma.ComplaintGetPayload<{
+  include: typeof complaintWithReporter;
+}>;
+
+// ============================================================
+// DUPLICATE CANDIDATES
+// ============================================================
+// Bounding-box prefilter in SQL (active complaints only), then exact
+// haversine distance, nearest first, capped at 5.
+// ============================================================
+
+export const findDuplicateCandidates = async (
+  latitude: number,
+  longitude: number,
+  radiusMeters = DUPLICATE_RADIUS_METERS,
+): Promise<DuplicateCandidate[]> => {
+  const latDelta = radiusMeters / METRES_PER_DEGREE_LAT;
+  const lngDelta =
+    radiusMeters /
+    (METRES_PER_DEGREE_LAT * Math.max(Math.cos((latitude * Math.PI) / 180), 0.01));
+
+  const nearby = await prisma.complaint.findMany({
+    where: {
+      status: { in: ACTIVE_STATUSES },
+      latitude: { gte: latitude - latDelta, lte: latitude + latDelta },
+      longitude: { gte: longitude - lngDelta, lte: longitude + lngDelta },
+    },
+    select: {
+      id: true,
+      description: true,
+      latitude: true,
+      longitude: true,
+    },
+  });
+
+  return nearby
+    .map((complaint) => ({
+      id: complaint.id,
+      description: complaint.description,
+      distanceMeters:
+        calculateDistance(
+          latitude,
+          longitude,
+          complaint.latitude,
+          complaint.longitude,
+        ) * 1000,
+    }))
+    .filter((candidate) => candidate.distanceMeters <= radiusMeters)
+    .sort((a, b) => a.distanceMeters - b.distanceMeters)
+    .slice(0, MAX_DUPLICATE_CANDIDATES);
+};
+
+// Nearest "yes" wins; otherwise the nearest "unsure". "no" never suggests.
+const pickDuplicateSuggestion = (
+  candidates: DuplicateCandidate[],
+  judgments: DuplicateJudgment[],
+) => {
+  for (const verdict of ["yes", "unsure"] as const) {
+    for (const candidate of candidates) {
+      const judgment = judgments.find(
+        (item) => item.candidateId === candidate.id && item.sameIssue === verdict,
+      );
+
+      if (judgment) return judgment;
+    }
+  }
+
+  return null;
+};
+
+// ============================================================
+// API RESPONSE
+// ============================================================
+
+export const buildComplaintResponse = async (
+  complaint: ComplaintWithReporter,
+  extras: { idempotentReplay?: boolean; processingMs?: number; aiErrors?: string[] } = {},
+) => {
+  const suggested = complaint.duplicateSuggestionOfId
+    ? await prisma.complaint.findUnique({
+        where: { id: complaint.duplicateSuggestionOfId },
+        select: { id: true, aiSummary: true, description: true, status: true },
+      })
+    : null;
+
+  return {
+    complaint,
+
+    duplicateSuggestion:
+      complaint.duplicateSuggestionOfId && complaint.duplicateSuggestionVerdict
+        ? {
+            complaintId: complaint.duplicateSuggestionOfId,
+            verdict: complaint.duplicateSuggestionVerdict,
+            reason: complaint.duplicateSuggestionReason,
+            summary: suggested?.aiSummary ?? suggested?.description ?? null,
+            status: suggested?.status ?? null,
+            confirmed: complaint.masterComplaintId !== null,
+          }
+        : null,
+
+    ai: {
+      source: complaint.aiSource,
+      needsManualReview: complaint.needsManualReview,
+      errors: extras.aiErrors ?? [],
+
+      summary: complaint.aiSummary,
+      wasteType: complaint.wasteType,
+      wasteCategories: complaint.aiWasteCategories,
+      relativeVolume: complaint.aiRelativeVolume,
+      condition: complaint.aiWasteCondition,
+      hazardousDetected: complaint.aiHazardousDetected,
+      hazardousTypes: complaint.aiHazardousTypes,
+      accessibility: complaint.aiAccessibility,
+      suggestedEquipment: complaint.aiSuggestedEquipment,
+      blockedRoad: complaint.aiBlockedRoad,
+      nearSensitiveSite: complaint.aiNearSensitiveSite,
+      confidence: complaint.aiImageConfidence,
+
+      priority: complaint.priority,
+      urgencyScore: complaint.urgencyScore,
+      requiredWorkers: complaint.requiredWorkers,
+      requiredHeavyVehicles: complaint.requiredHeavyVehicles,
+      estimatedTimeMinutes: complaint.estimatedTimeMinutes,
+      priorityReasons: complaint.priorityReasons,
+    },
+
+    idempotentReplay: extras.idempotentReplay ?? false,
+    ...(extras.processingMs !== undefined && { processingMs: extras.processingMs }),
+  };
+};
+
+// Returns the complaint already created with this key, or null.
+// A key belongs to the user who first used it.
+const findByIdempotencyKey = async (idempotencyKey: string, userId: string) => {
+  const existing = await prisma.complaint.findUnique({
+    where: { idempotencyKey },
+    include: complaintWithReporter,
+  });
+
+  if (existing && existing.userId !== userId) {
+    throw new HttpError(409, "This Idempotency-Key has already been used.");
+  }
+
+  return existing;
+};
+
+const isUniqueViolation = (error: unknown) =>
+  (error as { code?: unknown })?.code === "P2002";
 
 // ============================================================
 // CREATE COMPLAINT
+// ============================================================
+// 1. analysis (one multimodal AI call)       } in parallel
+// 2. duplicate candidates (SQL) + AI judgment }
+// 3. deterministic priority from features
+// 4. save; duplicates are only SUGGESTED (staff confirm separately)
 // ============================================================
 
 export const createComplaint = async ({
@@ -27,387 +218,375 @@ export const createComplaint = async ({
   longitude,
   userId,
   imageUrl,
+  imagePath,
+  imageMimeType,
+  idempotencyKey,
 }: CreateComplaintInput) => {
-  // ---------------------------------------------------------
-  // 1. AI STRUCTURED EXTRACTION
-  // ---------------------------------------------------------
+  const startedAt = performance.now();
 
-  const extracted = await extractComplaintData(text);
+  if (idempotencyKey) {
+    const existing = await findByIdempotencyKey(idempotencyKey, userId);
 
-  // ---------------------------------------------------------
-  // 2. FIND NEARBY ACTIVE COMPLAINTS
-  // ---------------------------------------------------------
+    if (existing) {
+      return {
+        replayed: true,
+        response: await buildComplaintResponse(existing, { idempotentReplay: true }),
+      };
+    }
+  }
 
-  const existingComplaints = await prisma.complaint.findMany({
-    where: {
-      status: {
-        in: ["Pending", "Open", "In Progress"],
-      },
-    },
-    select: {
-      id: true,
-      description: true,
-      latitude: true,
-      longitude: true,
-      status: true,
-      masterComplaintId: true,
-      voteCount: true,
-      aiSummary: true,
-      priority: true,
-    },
-  });
+  const image = imagePath
+    ? { data: await fs.readFile(imagePath), mimeType: imageMimeType ?? "image/jpeg" }
+    : undefined;
 
-  const nearbyComplaints = existingComplaints.filter((complaint) => {
-    const distance = calculateDistance(
-      latitude,
-      longitude,
-      complaint.latitude,
-      complaint.longitude,
-    );
+  const timings: Record<string, number> = {};
+  const timed = async <T>(label: string, work: () => Promise<T>) => {
+    const start = performance.now();
+    try {
+      return await work();
+    } finally {
+      timings[label] = Math.round(performance.now() - start);
+    }
+  };
 
-    return distance <= 0.5;
-  });
+  const [analysis, duplicateCheck] = await Promise.all([
+    timed("analysisMs", () => analyzeComplaint({ description: text, image })),
+    timed("duplicateMs", async () => {
+      const candidates = await findDuplicateCandidates(latitude, longitude);
 
-  // ---------------------------------------------------------
-  // 3. AI SEMANTIC DUPLICATE DETECTION
-  // ---------------------------------------------------------
+      return {
+        candidates,
+        result: candidates.length > 0 ? await judgeDuplicates(text, candidates) : null,
+      };
+    }),
+  ]);
 
-  const duplicateResult = await detectDuplicate(
-    text,
-    nearbyComplaints.map((complaint) => ({
-      id: complaint.id,
-      description: complaint.description,
-      latitude: complaint.latitude,
-      longitude: complaint.longitude,
-    })),
+  const { features } = analysis;
+  const duplicateResult = duplicateCheck.result;
+
+  const aiErrors = [analysis.error, duplicateResult?.error].filter(
+    (error): error is string => Boolean(error),
   );
 
-  // ---------------------------------------------------------
-  // 4. AI PRIORITY
-  // ---------------------------------------------------------
+  const stepSources = [analysis.source, duplicateResult?.source].filter(Boolean);
 
-  const priorityResult = await analyzePriority(text);
+  const aiSource: AiSource = stepSources.includes("fallback")
+    ? "fallback"
+    : stepSources.includes("gemini")
+      ? "gemini"
+      : "cached";
 
-  // ---------------------------------------------------------
-  // 5. AI SENTIMENT
-  // ---------------------------------------------------------
+  const scored = scorePriority(features, 1);
 
-  const sentimentResult = await analyzeSentiment(text);
+  const priorityReasons =
+    analysis.source === "fallback"
+      ? [
+          ...scored.reasons,
+          "AI analysis unavailable: features from keyword rules only. Needs manual review.",
+        ]
+      : scored.reasons;
 
-  // ---------------------------------------------------------
-  // 6. FINAL PRIORITY
-  // ---------------------------------------------------------
+  const suggestion = duplicateResult?.judgments
+    ? pickDuplicateSuggestion(duplicateCheck.candidates, duplicateResult.judgments)
+    : null;
 
-  let finalPriority = priorityResult.priority;
+  const data: Prisma.ComplaintUncheckedCreateInput = {
+    userId,
+    description: text,
+    imageUrl: imageUrl ?? null,
+    latitude,
+    longitude,
+    address: address ?? null,
+    wasteType: features.wasteType,
+    status: "Pending",
+    voteCount: 1,
+    isScheduled: false,
 
-  if (
-    sentimentResult.highPriority &&
-    finalPriority === "TRIVIAL"
-  ) {
-    finalPriority = "STANDARD";
-  }
+    priority: scored.priority,
+    urgencyScore: scored.urgencyScore,
+    requiredWorkers: scored.requiredWorkers,
+    requiredHeavyVehicles: scored.requiredHeavyVehicles,
+    estimatedTimeMinutes: scored.estimatedTimeMinutes,
+    priorityReasons,
 
-  // ---------------------------------------------------------
-  // 7. FIND MATCHING COMPLAINT
-  // ---------------------------------------------------------
+    aiWasteCategories: features.wasteCategories,
+    aiRelativeVolume: features.relativeVolume,
+    aiWasteCondition: features.condition,
+    aiHazardousDetected: features.hazardousDetected,
+    aiHazardousTypes: features.hazardousTypes,
+    aiAccessibility: features.accessibility,
+    aiSuggestedEquipment: features.suggestedEquipment,
+    aiBlockedRoad: features.blockedRoad,
+    aiNearSensitiveSite: features.nearSensitiveSite,
+    aiImageConfidence: features.confidence,
+    aiSummary: features.summary,
+    aiSource,
+    needsManualReview: aiSource === "fallback",
 
-  const matchingComplaint =
-    duplicateResult.matchingComplaintId
-      ? nearbyComplaints.find(
-          (complaint) =>
-            complaint.id === duplicateResult.matchingComplaintId,
-        )
-      : null;
+    duplicateSuggestionOfId: suggestion?.candidateId ?? null,
+    duplicateSuggestionVerdict: suggestion?.sameIssue ?? null,
+    duplicateSuggestionReason: suggestion?.reason ?? null,
 
-  // ---------------------------------------------------------
-  // 8. CREATE COMPLAINT
-  // ---------------------------------------------------------
+    idempotencyKey: idempotencyKey ?? null,
 
-  const complaint = await prisma.complaint.create({
-    data: {
-      userId,
-
-      description: text,
-
-      imageUrl: imageUrl ?? null,
-
-      latitude,
-      longitude,
-
-      address:
-        address ??
-        extracted.locationDescription,
-
-      locationDescription:
-        extracted.locationDescription,
-
-      wasteType:
-        extracted.wasteType,
-
-      estimatedQuantity:
-        extracted.estimatedQuantity,
-
-      status: "Pending",
-
-      priority: finalPriority,
-
-      urgencyScore: Math.max(
-        priorityResult.urgencyScore,
-        extracted.urgency,
-      ),
-
-      sentimentScore:
-        sentimentResult.sentimentScore,
-
-      sentimentLabel:
-        sentimentResult.sentimentLabel,
-
-      voteCount: 1,
-
-      duplicateSimilarity:
-        matchingComplaint
-          ? duplicateResult.similarityScore
-          : null,
-
-      duplicateOfId:
-        matchingComplaint
-          ? matchingComplaint.id
-          : null,
-
-      aiSummary: text,
-
-      requiredWorkers:
-        priorityResult.requiredWorkers,
-
-      requiredHeavyVehicles:
-        priorityResult.requiredHeavyVehicles,
-
-      estimatedTimeMinutes:
-        priorityResult.estimatedTimeMinutes,
-
-      isScheduled: false,
-    },
-  });
-
-  // ---------------------------------------------------------
-  // 9. LINK DUPLICATE COMPLAINT
-  // ---------------------------------------------------------
-
-  if (
-    matchingComplaint &&
-    duplicateResult.similarityScore > 0.85
-  ) {
-    const masterId =
-      matchingComplaint.masterComplaintId ??
-      matchingComplaint.id;
-
-    await prisma.complaint.update({
-      where: {
-        id: complaint.id,
-      },
-      data: {
-        masterComplaintId: masterId,
-        status: "Linked",
-      },
-    });
-
-    await prisma.complaint.update({
-      where: {
-        id: masterId,
-      },
-      data: {
-        voteCount: {
-          increment: 1,
-        },
-      },
-    });
-
-    // Prevent duplicate ComplaintLink records
-    await prisma.complaintLink.upsert({
-      where: {
-        masterComplaintId_linkedComplaintId: {
-          masterComplaintId: masterId,
-          linkedComplaintId: complaint.id,
-        },
-      },
-      update: {
-        similarityScore:
-          duplicateResult.similarityScore,
-      },
+    events: {
       create: {
-        masterComplaintId: masterId,
-        linkedComplaintId: complaint.id,
-        similarityScore:
-          duplicateResult.similarityScore,
+        actorId: userId,
+        type: "CREATED",
+        toValue: "Pending",
+        reason: `aiSource=${aiSource}`,
       },
-    });
-  }
-
-  // ---------------------------------------------------------
-  // 10. CREATE RECYCLABLE INVENTORY
-  //
-  // AI only provides approximate information.
-  //
-  // Exact weight MUST be entered by field staff.
-  // ---------------------------------------------------------
-
-  let inventory = null;
-
-  try {
-    inventory =
-      await prisma.recyclableInventory.create({
-        data: {
-          complaintId: complaint.id,
-
-          // AI prediction
-          aiPredictedType:
-            extracted.wasteType,
-
-          aiPredictedVolume:
-            extracted.estimatedQuantity,
-
-          aiConfidence: null,
-
-          // Physical verification
-          verifiedType: null,
-          verifiedWeightKg: null,
-          verifiedVolumeCbm: null,
-
-          // Quality assessment
-          qualityGrade: null,
-          contamination: null,
-
-          // Marketplace
-          isAvailable: false,
-          pricePerKg: null,
-          buyerId: null,
-
-          // Verification
-          verificationStatus:
-            "PendingVerification",
-
-          verifiedBy: null,
-          verifiedAt: null,
-        },
-      });
-  } catch (error) {
-    console.error(
-      "Failed to create recyclable inventory:",
-      error,
-    );
-  }
-
-  // ---------------------------------------------------------
-  // 11. GET FINAL COMPLAINT
-  // ---------------------------------------------------------
-
-  const finalComplaint =
-    await prisma.complaint.findUnique({
-      where: {
-        id: complaint.id,
-      },
-      include: {
-        User: {
-          select: {
-            id: true,
-            email: true,
-            role: true,
-          },
-        },
-        inventory: true,
-      },
-    });
-
-  // ---------------------------------------------------------
-  // 12. RETURN RESPONSE
-  // ---------------------------------------------------------
-
-  return {
-    complaint: finalComplaint,
-
-    inventory: inventory
-      ? {
-          id: inventory.id,
-
-          verificationStatus:
-            inventory.verificationStatus,
-
-          aiPredictedType:
-            inventory.aiPredictedType,
-
-          aiPredictedVolume:
-            inventory.aiPredictedVolume,
-
-          verifiedWeightKg:
-            inventory.verifiedWeightKg,
-
-          verifiedType:
-            inventory.verifiedType,
-        }
-      : null,
-
-    duplicate: {
-      detected:
-        Boolean(matchingComplaint) &&
-        duplicateResult.similarityScore > 0.85,
-
-      similarityScore:
-        duplicateResult.similarityScore,
-
-      matchingComplaintId:
-        matchingComplaint?.id ?? null,
-
-      matchingComplaintSummary:
-        matchingComplaint?.aiSummary ??
-        matchingComplaint?.description ??
-        null,
-
-      reason:
-        duplicateResult.reason,
-    },
-
-    ai: {
-      priority: finalPriority,
-
-      urgencyScore:
-        Math.max(
-          priorityResult.urgencyScore,
-          extracted.urgency,
-        ),
-
-      sentimentScore:
-        sentimentResult.sentimentScore,
-
-      sentimentLabel:
-        sentimentResult.sentimentLabel,
-
-      highPriority:
-        sentimentResult.highPriority,
-
-      wasteType:
-        extracted.wasteType,
-
-      locationDescription:
-        extracted.locationDescription,
-
-      estimatedQuantity:
-        extracted.estimatedQuantity,
-
-      requiredWorkers:
-        priorityResult.requiredWorkers,
-
-      requiredHeavyVehicles:
-        priorityResult.requiredHeavyVehicles,
-
-      estimatedTimeMinutes:
-        priorityResult.estimatedTimeMinutes,
     },
   };
+
+  let complaint: ComplaintWithReporter;
+
+  try {
+    complaint = await timed("saveMs", () =>
+      prisma.complaint.create({ data, include: complaintWithReporter }),
+    );
+  } catch (error) {
+    // Two requests with the same key raced; return the one that won.
+    if (idempotencyKey && isUniqueViolation(error)) {
+      const existing = await findByIdempotencyKey(idempotencyKey, userId);
+
+      if (existing) {
+        return {
+          replayed: true,
+          response: await buildComplaintResponse(existing, { idempotentReplay: true }),
+        };
+      }
+    }
+
+    throw error;
+  }
+
+  const processingMs = Math.round(performance.now() - startedAt);
+
+  console.log(
+    `[complaint ${complaint.id}] created in ${processingMs}ms ` +
+      `(analysis ${timings.analysisMs}ms, duplicates ${timings.duplicateMs}ms ` +
+      `[${duplicateCheck.candidates.length} candidates], save ${timings.saveMs}ms) ` +
+      `aiSource=${aiSource} priority=${scored.priority}` +
+      (suggestion ? ` duplicateSuggestion=${suggestion.candidateId}(${suggestion.sameIssue})` : "") +
+      (aiErrors.length ? ` errors=${JSON.stringify(aiErrors)}` : ""),
+  );
+
+  return {
+    replayed: false,
+    response: await buildComplaintResponse(complaint, { processingMs, aiErrors }),
+  };
+};
+
+// ============================================================
+// CONFIRM DUPLICATE (staff)
+// ============================================================
+// Links the complaint to its master in one transaction: masterComplaintId,
+// status=Linked, master voteCount += the duplicate's votes, master priority
+// re-scored with the new vote count.
+// ============================================================
+
+const LINKED_STATUSES: ComplaintStatus[] = ["Linked", "Merged"];
+
+export const confirmDuplicate = async (
+  complaintId: string,
+  confirmedBy: string,
+  requestedMasterId?: string,
+) => {
+  return prisma.$transaction(
+    async (tx) => {
+      const complaint = await tx.complaint.findUnique({
+        where: { id: complaintId },
+      });
+
+      if (!complaint) {
+        throw new HttpError(404, "Complaint not found");
+      }
+
+      const targetId = requestedMasterId ?? complaint.duplicateSuggestionOfId;
+
+      if (!targetId) {
+        throw new HttpError(400, "This complaint has no duplicate suggestion to confirm.");
+      }
+
+      let master: Complaint | null = await tx.complaint.findUnique({
+        where: { id: targetId },
+      });
+
+      // If the suggested complaint was itself linked meanwhile, use its master.
+      if (master?.masterComplaintId) {
+        master = await tx.complaint.findUnique({
+          where: { id: master.masterComplaintId },
+        });
+      }
+
+      if (!master) {
+        throw new HttpError(404, "Suggested original complaint not found");
+      }
+
+      if (master.id === complaint.id) {
+        throw new HttpError(400, "A complaint cannot be a duplicate of itself.");
+      }
+
+      if (LINKED_STATUSES.includes(master.status)) {
+        throw new HttpError(409, "The suggested original is itself linked or merged.");
+      }
+
+      // Atomic claim: a concurrent confirm for the same complaint gets 0 rows.
+      const claimed = await tx.complaint.updateMany({
+        where: {
+          id: complaint.id,
+          status: { notIn: LINKED_STATUSES },
+        },
+        data: {
+          masterComplaintId: master.id,
+          status: "Linked",
+        },
+      });
+
+      if (claimed.count === 0) {
+        throw new HttpError(409, "This complaint is already linked or merged.");
+      }
+
+      // Anything already linked to the duplicate moves to the master.
+      await tx.complaint.updateMany({
+        where: { masterComplaintId: complaint.id },
+        data: { masterComplaintId: master.id },
+      });
+
+      const withVotes = await tx.complaint.update({
+        where: { id: master.id },
+        data: { voteCount: { increment: complaint.voteCount } },
+      });
+
+      const updatedMaster = await tx.complaint.update({
+        where: { id: master.id },
+        data: rescoreComplaint(withVotes, withVotes.voteCount),
+      });
+
+      const reason =
+        complaint.duplicateSuggestionOfId === master.id
+          ? complaint.duplicateSuggestionReason
+          : "Linked manually by staff.";
+
+      await tx.complaintLink.upsert({
+        where: {
+          masterComplaintId_linkedComplaintId: {
+            masterComplaintId: master.id,
+            linkedComplaintId: complaint.id,
+          },
+        },
+        create: {
+          masterComplaintId: master.id,
+          linkedComplaintId: complaint.id,
+          reason,
+          confirmedBy,
+        },
+        update: { reason, confirmedBy },
+      });
+
+      await recordEvents(tx, [
+        {
+          complaintId: complaint.id,
+          actorId: confirmedBy,
+          type: "DUPLICATE_CONFIRMED",
+          fromValue: complaint.duplicateSuggestionOfId,
+          toValue: master.id,
+          reason,
+        },
+        statusChangeEvent(complaint.id, confirmedBy, complaint.status, "Linked"),
+      ]);
+
+      const linked = await tx.complaint.findUniqueOrThrow({
+        where: { id: complaint.id },
+      });
+
+      return { complaint: linked, master: updatedMaster };
+    },
+    { timeout: 20_000 },
+  );
+};
+
+// ============================================================
+// REJECT DUPLICATE SUGGESTION (staff)
+// ============================================================
+// Clears the suggestion and records the decision; the complaint stays a
+// separate report.
+// ============================================================
+
+export const rejectDuplicate = async (
+  complaintId: string,
+  rejectedBy: string,
+  reason?: string,
+) => {
+  return prisma.$transaction(async (tx) => {
+    const complaint = await tx.complaint.findUnique({
+      where: { id: complaintId },
+    });
+
+    if (!complaint) {
+      throw new HttpError(404, "Complaint not found");
+    }
+
+    if (!complaint.duplicateSuggestionOfId) {
+      throw new HttpError(400, "This complaint has no duplicate suggestion to reject.");
+    }
+
+    if (complaint.masterComplaintId) {
+      throw new HttpError(409, "This complaint is already linked; the suggestion cannot be rejected.");
+    }
+
+    const updated = await tx.complaint.update({
+      where: { id: complaint.id },
+      data: {
+        duplicateSuggestionOfId: null,
+        duplicateSuggestionVerdict: null,
+        duplicateSuggestionReason: null,
+      },
+    });
+
+    await recordEvents(tx, [
+      {
+        complaintId: complaint.id,
+        actorId: rejectedBy,
+        type: "DUPLICATE_REJECTED",
+        fromValue: complaint.duplicateSuggestionOfId,
+        reason: reason ?? complaint.duplicateSuggestionReason,
+      },
+    ]);
+
+    return updated;
+  });
 };
 
 // ============================================================
 // GET NEARBY COMPLAINTS
 // ============================================================
+// Visible to every signed-in user, so only public fields are selected:
+// no reporter id/email, staff ids or idempotency keys.
+// ============================================================
+
+const PUBLIC_COMPLAINT_SELECT = {
+  id: true,
+  description: true,
+  imageUrl: true,
+  latitude: true,
+  longitude: true,
+  address: true,
+  wasteType: true,
+  status: true,
+  priority: true,
+  urgencyScore: true,
+  voteCount: true,
+  aiSummary: true,
+  aiWasteCategories: true,
+  isSimulated: true,
+  masterComplaintId: true,
+  afterImageUrl: true,
+  resolvedAt: true,
+  createdAt: true,
+  updatedAt: true,
+} satisfies Prisma.ComplaintSelect;
 
 export const getNearbyComplaints = async (
   latitude: number,
@@ -418,20 +597,14 @@ export const getNearbyComplaints = async (
     await prisma.complaint.findMany({
       where: {
         status: {
-          in: [
-            "Pending",
-            "Open",
-            "In Progress",
-          ],
+          in: ACTIVE_STATUSES,
         },
       },
 
+      select: PUBLIC_COMPLAINT_SELECT,
+
       orderBy: {
         createdAt: "desc",
-      },
-
-      include: {
-        inventory: true,
       },
     });
 
@@ -472,13 +645,35 @@ export const getNearbyComplaints = async (
 };
 
 // ============================================================
+// CITIZEN VIEW
+// ============================================================
+// What a citizen sees of their own complaint: no reporter email, no staff
+// user ids (assignment staff/assigner, verifier).
+// ============================================================
+
+const citizenAssignmentSelect = {
+  id: true,
+  status: true,
+  assignedAt: true,
+  updatedAt: true,
+} satisfies Prisma.AssignmentSelect;
+
+const toCitizenView = <T extends { verifiedBy: string | null; User?: unknown }>(
+  complaint: T,
+): Omit<T, "verifiedBy" | "User"> => {
+  const { verifiedBy: _verifiedBy, User: _reporter, ...rest } = complaint;
+
+  return rest;
+};
+
+// ============================================================
 // GET USER COMPLAINTS
 // ============================================================
 
 export const getUserComplaints = async (
   userId: string,
 ) => {
-  return prisma.complaint.findMany({
+  const complaints = await prisma.complaint.findMany({
     where: {
       userId,
     },
@@ -488,64 +683,113 @@ export const getUserComplaints = async (
     },
 
     include: {
-      assignments: true,
-      inventory: {
-        include: {
-          marketplaceListing: true,
-        },
-      },
+      assignments: { select: citizenAssignmentSelect },
     },
   });
+
+  return complaints.map((complaint) => toCitizenView(complaint));
 };
 
 // ============================================================
 // GET SINGLE COMPLAINT
 // ============================================================
+// Citizens may only read their own complaints (others look "not found" so
+// ids cannot be probed); staff and admins can read any, with reporter info.
+// ============================================================
+
+// Event types a citizen sees in their own timeline. Internal decisions
+// (priority overrides, dismissed duplicate suggestions) are left out.
+const CITIZEN_EVENT_TYPES = [
+  "CREATED",
+  "STATUS_CHANGED",
+  "ASSIGNED",
+  "DUPLICATE_CONFIRMED",
+  "MERGED",
+] as const;
+
+type TimelineEvent = {
+  type: string;
+  fromValue: string | null;
+  toValue: string | null;
+  reason: string | null;
+  createdAt: Date;
+  actor?: { id: string; email: string; role: string } | null;
+};
+
+// No actors, no staff emails; only the completion note keeps its text.
+const toCitizenTimeline = (events: TimelineEvent[]) =>
+  events
+    .filter((event) =>
+      (CITIZEN_EVENT_TYPES as readonly string[]).includes(event.type),
+    )
+    .map((event) => ({
+      type: event.type,
+      fromValue: event.fromValue,
+      toValue: event.type === "ASSIGNED" ? null : event.toValue,
+      reason:
+        event.type === "STATUS_CHANGED" && event.toValue === "Resolved"
+          ? event.reason
+          : null,
+      createdAt: event.createdAt,
+    }));
 
 export const getComplaintById = async (
   complaintId: string,
+  viewer: { userId: string; role: string | undefined },
 ) => {
-  return prisma.complaint.findUnique({
-    where: {
-      id: complaintId,
-    },
+  const isStaff = viewer.role === "STAFF" || viewer.role === "ADMIN";
 
-    include: {
-      User: {
-        select: {
-          id: true,
-          email: true,
-          role: true,
-        },
+  // In parallel: each database round trip is the expensive part.
+  const [complaint, events] = await Promise.all([
+    prisma.complaint.findUnique({
+      where: {
+        id: complaintId,
       },
 
-      assignments: true,
+      include: {
+        User: {
+          select: {
+            id: true,
+            email: true,
+            role: true,
+          },
+        },
 
-      inventory: {
-        include: {
-          marketplaceListing: true,
-          buyer: {
-            select: {
-              id: true,
-              email: true,
-              role: true,
-            },
+        assignments: isStaff ? true : { select: citizenAssignmentSelect },
+
+        childComplaints: {
+          select: {
+            id: true,
+            description: true,
+            status: true,
+            voteCount: true,
+            createdAt: true,
           },
         },
       },
-
-      childComplaints: {
-        select: {
-          id: true,
-          description: true,
-          status: true,
-          voteCount: true,
-          duplicateSimilarity: true,
-          createdAt: true,
-        },
+    }),
+    prisma.complaintEvent.findMany({
+      where: { complaintId },
+      orderBy: { createdAt: "asc" },
+      include: {
+        actor: { select: { id: true, email: true, role: true } },
       },
-    },
-  });
+    }),
+  ]);
+
+  if (!complaint) {
+    throw new HttpError(404, "Complaint not found");
+  }
+
+  if (isStaff) {
+    return { ...complaint, timeline: events };
+  }
+
+  if (complaint.userId !== viewer.userId) {
+    throw new HttpError(404, "Complaint not found");
+  }
+
+  return { ...toCitizenView(complaint), timeline: toCitizenTimeline(events) };
 };
 
 // ============================================================
@@ -554,36 +798,62 @@ export const getComplaintById = async (
 
 export const updateComplaint = async (
   complaintId: string,
-  data: Record<string, unknown>,
+  actorId: string,
+  data: {
+    status?: ComplaintStatus | undefined;
+    address?: string | undefined;
+    wasteType?: string | undefined;
+    isScheduled?: boolean | undefined;
+  },
 ) => {
-  const allowedFields = [
-    "status",
-    "address",
-    "wasteType",
-    "priority",
-    "isScheduled",
-  ];
+  return prisma.$transaction(async (tx) => {
+    const existing = await tx.complaint.findUnique({
+      where: { id: complaintId },
+    });
 
-  const updateData:
-    Record<string, unknown> = {};
-
-  for (const field of allowedFields) {
-    if (data[field] !== undefined) {
-      updateData[field] = data[field];
+    if (!existing) {
+      throw new HttpError(404, "Complaint not found");
     }
-  }
 
-  return prisma.complaint.update({
-    where: {
-      id: complaintId,
-    },
+    const statusChanged =
+      data.status !== undefined && data.status !== existing.status;
 
-    data: updateData,
+    const updated = await tx.complaint.update({
+      where: { id: complaintId },
+      data: {
+        ...(data.address !== undefined && { address: data.address }),
+        ...(data.wasteType !== undefined && { wasteType: data.wasteType }),
+        ...(data.isScheduled !== undefined && { isScheduled: data.isScheduled }),
+        ...(statusChanged && {
+          status: data.status as ComplaintStatus,
+          resolvedAt:
+            data.status === "Resolved" ? (existing.resolvedAt ?? new Date()) : null,
+        }),
+      },
+    });
+
+    if (statusChanged) {
+      await recordEvents(tx, [
+        statusChangeEvent(
+          complaintId,
+          actorId,
+          existing.status,
+          data.status as string,
+          "Changed by staff edit",
+        ),
+      ]);
+    }
+
+    return updated;
   });
 };
 
 // ============================================================
 // VERIFY COMPLAINT
+// ============================================================
+// Staff confirms the report is genuine. This is recorded on
+// verifiedAt/verifiedBy and does not change the lifecycle status,
+// so a verified complaint stays in the active work queue.
 // ============================================================
 
 export const verifyComplaint = async (
@@ -598,7 +868,7 @@ export const verifyComplaint = async (
     });
 
   if (!complaint) {
-    throw new Error(
+    throw new HttpError(404,
       "Complaint not found",
     );
   }
@@ -609,34 +879,23 @@ export const verifyComplaint = async (
     },
 
     data: {
-      status: "Verified",
+      verifiedAt: new Date(),
+      verifiedBy,
     },
   });
 };
 
-
 // ============================================================
 // GET HOTSPOTS
 // ============================================================
 
-// ============================================================
-// GET HOTSPOTS
-// ============================================================
-
-const HOTSPOT_RADIUS_METERS = 500;
-
-
-const getPriorityWeight = (priority: string | null) => {
-  switch (priority?.toLowerCase()) {
-    case "critical":
+const getPriorityWeight = (priority: Priority) => {
+  switch (priority) {
+    case "CRITICAL":
       return 10;
-    case "high":
-      return 7;
-    case "medium":
+    case "STANDARD":
       return 4;
-    case "low":
-      return 2;
-    default:
+    case "TRIVIAL":
       return 1;
   }
 };
@@ -645,7 +904,7 @@ export const getHotspots = async () => {
   const complaints = await prisma.complaint.findMany({
     where: {
       status: {
-        in: ["Pending", "Open", "In Progress"],
+        in: ACTIVE_STATUSES,
       },
     },
 
@@ -658,13 +917,7 @@ export const getHotspots = async () => {
       voteCount: true,
       status: true,
       createdAt: true,
-
-      inventory: {
-        select: {
-          verificationStatus: true,
-          verifiedWeightKg: true,
-        },
-      },
+      isSimulated: true,
     },
   });
 
@@ -681,16 +934,16 @@ export const getHotspots = async () => {
     const latitude = Number(complaint.latitude);
     const longitude = Number(complaint.longitude);
 
-    // Find an existing hotspot within 500 meters
+    // Find an existing hotspot within HOTSPOT_RADIUS_METERS
     let hotspot = hotspots.find((existingHotspot) => {
-      const distance = calculateDistance(
+      const distanceKm = calculateDistance(
         latitude,
         longitude,
         existingHotspot.latitude,
         existingHotspot.longitude
       );
 
-      return distance <= HOTSPOT_RADIUS_METERS;
+      return distanceKm * 1000 <= HOTSPOT_RADIUS_METERS;
     });
 
     // Create a new hotspot if none exists
@@ -702,7 +955,6 @@ export const getHotspots = async () => {
         complaintCount: 0,
         score: 0,
         totalVotes: 0,
-        totalVerifiedWeightKg: 0,
       };
 
       hotspots.push(hotspot);
@@ -717,16 +969,6 @@ export const getHotspots = async () => {
 
     // Priority contribution
     hotspot.score += getPriorityWeight(complaint.priority);
-
-    // Verified waste weight contribution
-    if (
-      complaint.inventory?.verificationStatus === "Verified" &&
-      complaint.inventory?.verifiedWeightKg
-    ) {
-      hotspot.totalVerifiedWeightKg += Number(
-        complaint.inventory.verifiedWeightKg
-      );
-    }
   }
 
   // Calculate final hotspot score
@@ -735,16 +977,10 @@ export const getHotspots = async () => {
 
     const voteScore = Math.min(hotspot.totalVotes * 0.5, 20);
 
-    const weightScore = Math.min(
-      hotspot.totalVerifiedWeightKg * 0.2,
-      20
-    );
-
     const finalScore =
       hotspot.score +
       complaintScore +
-      voteScore +
-      weightScore;
+      voteScore;
 
     let level = "LOW";
 
@@ -764,8 +1000,11 @@ export const getHotspots = async () => {
 
       totalVotes: hotspot.totalVotes,
 
-      totalVerifiedWeightKg:
-        Math.round(hotspot.totalVerifiedWeightKg * 100) / 100,
+      radiusMeters: HOTSPOT_RADIUS_METERS,
+
+      simulatedCount: hotspot.complaints.filter(
+        (complaint: any) => complaint.isSimulated,
+      ).length,
 
       score: Math.round(finalScore * 100) / 100,
 
@@ -802,706 +1041,125 @@ export const getHotspots = async () => {
 
 export const mergeComplaints = async (
   complaintIds: string[],
+  actorId: string,
 ) => {
-  if (complaintIds.length < 2) {
-    throw new Error(
-      "At least two complaints are required for merging",
-    );
+  const ids = [...new Set(complaintIds)];
+
+  if (ids.length < 2) {
+    throw new HttpError(400, "At least two different complaints are required for merging");
   }
 
-  const complaints =
-    await prisma.complaint.findMany({
-      where: {
-        id: {
-          in: complaintIds,
-        },
-      },
-    });
+  // The first id in the request is the master.
+  const [masterId, ...mergedIds] = ids as [string, ...string[]];
 
-  if (
-    complaints.length !==
-    complaintIds.length
-  ) {
-    throw new Error(
-      "One or more complaints were not found",
-    );
-  }
+  return prisma.$transaction(
+    async (tx) => {
+      const complaints = await tx.complaint.findMany({
+        where: { id: { in: ids } },
+      });
 
-  const masterComplaint =
-    complaints[0];
+      if (complaints.length !== ids.length) {
+        throw new HttpError(404, "One or more complaints were not found");
+      }
 
-  if (!masterComplaint) {
-    throw new Error(
-      "Master complaint could not be determined",
-    );
-  }
+      const alreadyLinked = complaints.filter(
+        (complaint) =>
+          complaint.status === "Linked" ||
+          complaint.status === "Merged" ||
+          complaint.masterComplaintId !== null,
+      );
 
-  const totalVotes =
-    complaints.reduce(
-      (total, complaint) =>
-        total +
-        (complaint.voteCount ?? 1),
-      0,
-    );
+      if (alreadyLinked.length > 0) {
+        throw new HttpError(
+          409,
+          `Already linked or merged: ${alreadyLinked.map((c) => c.id).join(", ")}`,
+        );
+      }
 
-  const descriptions =
-    complaints.map(
-      (complaint) =>
-        complaint.description,
-    );
+      const merged = complaints.filter((complaint) => complaint.id !== masterId);
+      const addedVotes = merged.reduce((total, c) => total + c.voteCount, 0);
 
-  const combinedDescription =
-    descriptions.join("\n");
+      await tx.complaint.updateMany({
+        where: { id: { in: mergedIds } },
+        data: { masterComplaintId: masterId, status: "Merged" },
+      });
 
-  const updatedMaster =
-    await prisma.complaint.update({
-      where: {
-        id: masterComplaint.id,
-      },
+      // Anything already linked to a merged complaint moves to the master.
+      await tx.complaint.updateMany({
+        where: { masterComplaintId: { in: mergedIds } },
+        data: { masterComplaintId: masterId },
+      });
 
-      data: {
-        voteCount: totalVotes,
-        status: "Pending",
-      },
-    });
+      // The master keeps its status (it may already be assigned).
+      const withVotes = await tx.complaint.update({
+        where: { id: masterId },
+        data: { voteCount: { increment: addedVotes } },
+      });
 
-  await prisma.complaint.updateMany({
-    where: {
-      id: {
-        in: complaintIds.filter(
-          (id) =>
-            id !==
-            masterComplaint.id,
-        ),
-      },
+      const updatedMaster = await tx.complaint.update({
+        where: { id: masterId },
+        data: rescoreComplaint(withVotes, withVotes.voteCount),
+      });
+
+      await recordEvents(
+        tx,
+        merged.flatMap((complaint) => [
+          {
+            complaintId: complaint.id,
+            actorId,
+            type: "MERGED" as const,
+            toValue: masterId,
+          },
+          statusChangeEvent(complaint.id, actorId, complaint.status, "Merged"),
+        ]),
+      );
+
+      return {
+        masterComplaint: updatedMaster,
+        mergedComplaintIds: mergedIds,
+        voteCount: updatedMaster.voteCount,
+      };
     },
-
-    data: {
-      masterComplaintId:
-        masterComplaint.id,
-
-      status: "Merged",
-    },
-  });
-
-  return {
-    masterComplaint:
-      updatedMaster,
-
-    mergedComplaintIds:
-      complaintIds.filter(
-        (id) =>
-          id !==
-          masterComplaint.id,
-      ),
-
-    voteCount: totalVotes,
-
-    combinedDescriptions:
-      combinedDescription,
-  };
+    { timeout: 20_000 },
+  );
 };
 
 // ============================================================
 // GET TODAY'S TASKS
 // ============================================================
-
-export const getTodaysTasks =
-  async () => {
-    return prisma.complaint.findMany({
-      where: {
-        isScheduled: true,
-
-        status: {
-          in: [
-            "Pending",
-            "Open",
-            "In Progress",
-          ],
-        },
-      },
-
-      orderBy: [
-        {
-          priority: "asc",
-        },
-
-        {
-          urgencyScore: "desc",
-        },
-
-        {
-          voteCount: "desc",
-        },
-
-        {
-          createdAt: "asc",
-        },
-      ],
-
-      include: {
-        assignments: true,
-        inventory: true,
-      },
-    });
-  };
-
-// ============================================================
-// RECYCLING / RECYCLABLE INVENTORY
-// ============================================================
-//
-// Flow:
-//
-// Complaint created
-//      ↓
-// RecyclableInventory created
-//      ↓
-// PendingVerification
-//      ↓
-// Field worker verifies physical waste
-//      ↓
-// Verified
-//      ↓
-// MarketplaceListing created
-//
-// AI predictions are approximate.
-// Exact weight/volume must come from field verification.
+// The complaints in today's generated plan (committed + scheduled) that
+// are still active, in plan order. No plan today -> no tasks, so a plan
+// from a previous day can never show up as today's work.
 // ============================================================
 
+export const getTodaysTasks = async () => {
+  const plan = await getTodayPlan();
 
-// ============================================================
-// GET PENDING RECYCLABLE INVENTORY
-// ============================================================
-// Field workers use this endpoint to see recyclable waste
-// waiting for physical verification.
-// ============================================================
+  if (!plan) {
+    return { planGenerated: false, generatedAt: null, tasks: [] };
+  }
 
-export const getPendingRecyclableInventory = async () => {
-  return prisma.recyclableInventory.findMany({
+  const order = [...plan.committed, ...plan.scheduled].map(
+    (item) => item.complaintId,
+  );
+
+  const complaints = await prisma.complaint.findMany({
     where: {
-      verificationStatus: "PendingVerification",
+      id: { in: order },
+      status: { in: ACTIVE_STATUSES },
     },
-
-    orderBy: {
-      createdAt: "asc",
-    },
-
     include: {
-      complaint: {
-        select: {
-          id: true,
-          description: true,
-          imageUrl: true,
-          latitude: true,
-          longitude: true,
-          address: true,
-          locationDescription: true,
-          wasteType: true,
-          estimatedQuantity: true,
-
-          // AI image / waste analysis
-          aiWasteCategories: true,
-          aiRelativeVolume: true,
-          aiWasteCondition: true,
-          aiHazardousDetected: true,
-          aiHazardousTypes: true,
-          aiAccessibility: true,
-          aiSuggestedEquipment: true,
-          aiQualityIndicators: true,
-          aiImageConfidence: true,
-
-          priority: true,
-          urgencyScore: true,
-          status: true,
-          createdAt: true,
-        },
-      },
+      assignments: true,
     },
   });
-};
 
-
-// ============================================================
-// VERIFY RECYCLABLE INVENTORY
-// ============================================================
-//
-// Field worker enters REAL physical measurements.
-//
-// Required:
-// - verifiedType
-// - verifiedWeightKg
-//
-// Optional:
-// - verifiedVolumeCbm
-// - qualityGrade
-// - contamination
-// - pricePerKg
-// - images
-//
-// After verification:
-//
-// PendingVerification
-//        ↓
-//     Verified
-//        ↓
-// MarketplaceListing created
-// ============================================================
-
-interface VerifyInventoryInput {
-  inventoryId: string;
-
-  verifiedBy: string;
-
-  verifiedType: string;
-
-  verifiedWeightKg?: number;
-
-  verifiedVolumeCbm?: number;
-
-  qualityGrade?: string;
-
-  contamination?: string;
-
-  pricePerKg?: number;
-
-  images?: string[];
-}
-
-export const verifyRecyclableInventory = async ({
-  inventoryId,
-  verifiedBy,
-  verifiedType,
-  verifiedWeightKg,
-  verifiedVolumeCbm,
-  qualityGrade,
-  contamination,
-  pricePerKg,
-  images = [],
-}: VerifyInventoryInput) => {
-  // ----------------------------------------------------------
-  // 1. FIND INVENTORY
-  // ----------------------------------------------------------
-
-  const inventory =
-    await prisma.recyclableInventory.findUnique({
-      where: {
-        id: inventoryId,
-      },
-
-      include: {
-        complaint: true,
-        marketplaceListing: true,
-      },
-    });
-
-  if (!inventory) {
-    throw new Error(
-      "Recyclable inventory not found",
-    );
-  }
-
-  // ----------------------------------------------------------
-  // 2. CHECK CURRENT STATUS
-  // ----------------------------------------------------------
-
-  if (
-    inventory.verificationStatus !==
-    "PendingVerification"
-  ) {
-    throw new Error(
-      `Inventory is already ${inventory.verificationStatus}`,
-    );
-  }
-
-  // ----------------------------------------------------------
-  // 3. VALIDATE WASTE TYPE
-  // ----------------------------------------------------------
-
-  if (
-    !verifiedType ||
-    verifiedType.trim().length === 0
-  ) {
-    throw new Error(
-      "Verified waste type is required",
-    );
-  }
-
-  // ----------------------------------------------------------
-  // 4. VALIDATE WEIGHT
-  // ----------------------------------------------------------
-
-  if (
-    verifiedWeightKg === undefined ||
-    !Number.isFinite(verifiedWeightKg) ||
-    verifiedWeightKg <= 0
-  ) {
-    throw new Error(
-      "Verified weight must be greater than 0 kg",
-    );
-  }
-
-  // ----------------------------------------------------------
-  // 5. VALIDATE VOLUME
-  // ----------------------------------------------------------
-
-  if (
-    verifiedVolumeCbm !== undefined &&
-    (
-      !Number.isFinite(verifiedVolumeCbm) ||
-      verifiedVolumeCbm < 0
-    )
-  ) {
-    throw new Error(
-      "Verified volume must be a valid number",
-    );
-  }
-
-  // ----------------------------------------------------------
-  // 6. VALIDATE PRICE
-  // ----------------------------------------------------------
-
-  if (
-    pricePerKg !== undefined &&
-    (
-      !Number.isFinite(pricePerKg) ||
-      pricePerKg < 0
-    )
-  ) {
-    throw new Error(
-      "Price per kg must be a valid non-negative number",
-    );
-  }
-
-  const finalPricePerKg =
-    pricePerKg ?? 0;
-
-  const totalPrice =
-    verifiedWeightKg *
-    finalPricePerKg;
-
-  const listingImages =
-    Array.isArray(images)
-      ? images
-      : [];
-
-  // ----------------------------------------------------------
-  // 7. VERIFY + CREATE LISTING IN ONE TRANSACTION
-  // ----------------------------------------------------------
-
-  const result =
-    await prisma.$transaction(
-      async (tx) => {
-
-        // ----------------------------------------------------
-        // UPDATE INVENTORY
-        // ----------------------------------------------------
-
-        const verifiedInventory =
-          await tx.recyclableInventory.update({
-            where: {
-              id: inventoryId,
-            },
-
-            data: {
-              verifiedType:
-                verifiedType.trim(),
-
-              verifiedWeightKg:
-                verifiedWeightKg,
-
-              verifiedVolumeCbm:
-                verifiedVolumeCbm ?? null,
-
-              qualityGrade:
-                qualityGrade?.trim() || null,
-
-              contamination:
-                contamination?.trim() || null,
-
-              pricePerKg:
-                finalPricePerKg,
-
-              isAvailable: true,
-
-              verificationStatus:
-                "Verified",
-
-              verifiedBy,
-
-              verifiedAt:
-                new Date(),
-            },
-
-            include: {
-              complaint: true,
-            },
-          });
-
-        // ----------------------------------------------------
-        // CREATE / UPDATE MARKETPLACE LISTING
-        // ----------------------------------------------------
-
-        const title =
-          `${verifiedType.trim()} - ${verifiedWeightKg} kg`;
-
-        const description =
-          `Verified ${verifiedType.trim()} recyclable waste ` +
-          `available for collection. ` +
-          `Quantity: ${verifiedWeightKg} kg.` +
-          (
-            qualityGrade
-              ? ` Quality grade: ${qualityGrade}.`
-              : ""
-          ) +
-          (
-            contamination
-              ? ` Contamination: ${contamination}.`
-              : ""
-          );
-
-        const listing =
-          await tx.marketplaceListing.upsert({
-            where: {
-              inventoryId,
-            },
-
-            update: {
-              title,
-
-              description,
-
-              quantityKg:
-                verifiedWeightKg,
-
-              wasteType:
-                verifiedType.trim(),
-
-              location:
-                inventory.complaint.address ??
-                inventory.complaint.locationDescription ??
-                `${inventory.complaint.latitude}, ${inventory.complaint.longitude}`,
-
-              pricePerKg:
-                finalPricePerKg,
-
-              totalPrice,
-
-              images:
-                listingImages,
-
-              status:
-                "Active",
-
-              expiresAt:
-                new Date(
-                  Date.now() +
-                    30 *
-                      24 *
-                      60 *
-                      60 *
-                      1000,
-                ),
-            },
-
-            create: {
-              inventoryId,
-
-              title,
-
-              description,
-
-              quantityKg:
-                verifiedWeightKg,
-
-              wasteType:
-                verifiedType.trim(),
-
-              location:
-                inventory.complaint.address ??
-                inventory.complaint.locationDescription ??
-                `${inventory.complaint.latitude}, ${inventory.complaint.longitude}`,
-
-              pricePerKg:
-                finalPricePerKg,
-
-              totalPrice,
-
-              images:
-                listingImages,
-
-              status:
-                "Active",
-
-              views: 0,
-
-              interestedBuyers: [],
-
-              expiresAt:
-                new Date(
-                  Date.now() +
-                    30 *
-                      24 *
-                      60 *
-                      60 *
-                      1000,
-                ),
-            },
-          });
-
-        return {
-          inventory:
-            verifiedInventory,
-
-          listing,
-        };
-      },
-    );
-
-  return result;
-};
-
-
-// ============================================================
-// REJECT RECYCLABLE INVENTORY
-// ============================================================
-//
-// Used when field worker determines that the waste is:
-//
-// - not recyclable
-// - incorrectly classified
-// - inaccessible
-// - unsafe
-// - unsuitable for marketplace
-// ============================================================
-
-export const rejectRecyclableInventory = async (
-  inventoryId: string,
-  verifiedBy: string,
-) => {
-
-  const inventory =
-    await prisma.recyclableInventory.findUnique({
-      where: {
-        id: inventoryId,
-      },
-    });
-
-  if (!inventory) {
-    throw new Error(
-      "Recyclable inventory not found",
-    );
-  }
-
-  if (
-    inventory.verificationStatus !==
-    "PendingVerification"
-  ) {
-    throw new Error(
-      `Inventory is already ${inventory.verificationStatus}`,
-    );
-  }
-
-  return prisma.recyclableInventory.update({
-    where: {
-      id: inventoryId,
-    },
-
-    data: {
-      verificationStatus:
-        "Rejected",
-
-      isAvailable:
-        false,
-
-      verifiedBy,
-
-      verifiedAt:
-        new Date(),
-    },
-
-    include: {
-      complaint: true,
-    },
-  });
-};
-
-
-// ============================================================
-// GET MARKETPLACE LISTINGS
-// ============================================================
-//
-// Recyclers/buyers can browse only:
-//
-// - Active listings
-// - Non-expired listings
-// - Verified inventory
-// - Currently available inventory
-// ============================================================
-
-export const getMarketplaceListings =
-  async () => {
-
-    return prisma.marketplaceListing.findMany({
-      where: {
-        status: "Active",
-
-        expiresAt: {
-          gt: new Date(),
-        },
-
-        inventory: {
-          verificationStatus:
-            "Verified",
-
-          isAvailable:
-            true,
-        },
-      },
-
-      orderBy: {
-        createdAt: "desc",
-      },
-
-      include: {
-        inventory: {
-          select: {
-            id: true,
-
-            verifiedType: true,
-
-            verifiedWeightKg: true,
-
-            verifiedVolumeCbm: true,
-
-            qualityGrade: true,
-
-            contamination: true,
-
-            verificationStatus: true,
-
-            verifiedBy: true,
-
-            verifiedAt: true,
-
-            complaint: {
-              select: {
-                id: true,
-
-                address: true,
-
-                locationDescription: true,
-
-                latitude: true,
-
-                longitude: true,
-
-                imageUrl: true,
-
-                wasteType: true,
-              },
-            },
-          },
-        },
-      },
-    });
+  const position = new Map(order.map((id, index) => [id, index]));
+
+  return {
+    planGenerated: true,
+    generatedAt: plan.generatedAt,
+    tasks: complaints.sort(
+      (a, b) => (position.get(a.id) ?? 0) - (position.get(b.id) ?? 0),
+    ),
   };
+};

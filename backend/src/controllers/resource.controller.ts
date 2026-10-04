@@ -1,5 +1,6 @@
 import type { Request, Response } from "express";
 import * as resourceService from "../services/resource.service.js";
+import { sendError } from "../utils/httpError.js";
 
 export const getDailyResources = async (req: Request, res: Response) => {
   try {
@@ -10,11 +11,6 @@ export const getDailyResources = async (req: Request, res: Response) => {
       data: resources,
     });
   } catch (error) {
-    console.error("DAILY RESOURCES ERROR:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: "Failed to fetch daily resources",
-    });
+    return sendError(res, error, "DAILY RESOURCES", "Failed to fetch daily resources");
   }
 };

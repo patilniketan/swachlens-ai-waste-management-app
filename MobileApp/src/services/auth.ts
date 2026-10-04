@@ -4,6 +4,8 @@ import type {
   ApiEnvelope,
   LoginRequest,
   LoginResponseData,
+  SignupRequest,
+  SignupResponseData,
   SignupRequestOtpRequest,
   SignupVerifyOtpRequest,
   User,
@@ -28,7 +30,26 @@ export async function login(payload: LoginRequest): Promise<User | undefined> {
   return data.user;
 }
 
-/** Requests an OTP be sent to the given email as the first step of signup. */
+/**
+ * Creates the account. Returns whether an OTP step is needed (it is not
+ * when the backend runs in DEMO_MODE).
+ */
+export async function signup(
+  payload: SignupRequest,
+): Promise<SignupResponseData> {
+  const res = await apiRequest<ApiEnvelope<SignupResponseData>>('/auth/signup', {
+    method: 'POST',
+    body: payload,
+    authenticated: false,
+  });
+
+  return {
+    requiresVerification: res?.data?.requiresVerification ?? true,
+    message: res?.data?.message ?? res?.message ?? '',
+  };
+}
+
+/** Re-sends the signup OTP for an unverified account. */
 export async function requestSignupOtp(
   payload: SignupRequestOtpRequest,
 ): Promise<void> {

@@ -1,6 +1,7 @@
 import type { Response } from "express";
-import type { AuthRequest } from "../middleware/auth.middleware";
-import * as adminDashboardService from "../services/admin.dashboard.service";
+import type { AuthRequest } from "../middleware/auth.middleware.js";
+import * as adminDashboardService from "../services/admin.dashboard.service.js";
+import { sendError } from "../utils/httpError.js";
 
 export const getDashboardStats = async (req: AuthRequest, res: Response) => {
   try {
@@ -11,11 +12,6 @@ export const getDashboardStats = async (req: AuthRequest, res: Response) => {
       data: stats,
     });
   } catch (error) {
-    console.error("Get dashboard stats error:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: "Failed to fetch dashboard statistics",
-    });
+    return sendError(res, error, "GET DASHBOARD STATS", "Failed to fetch dashboard statistics");
   }
 };

@@ -1,29 +1,28 @@
-# CivicClean Web Portal
+# SwachhLens AI: Operations Portal
 
-Frontend-only reporting and operations portal for a civic waste-management platform. It provides an operational dashboard, complaint workflow, location view, staff/task overview, analytics, profile, and settings screens.
+React + Vite web portal for municipal staff, backed by the SwachhLens AI API in `../backend`.
 
-## Run locally
+- **Administrators:** dashboard, urgency-ranked complaint list, complaint detail (AI analysis, priority reasons and override, duplicate confirm/dismiss, assignment, event timeline), map with hotspots, today's plan, staff workload, analytics, CSV export.
+- **Field staff:** a phone-friendly "My tasks" page to start work and complete it with an after photo and the weighed amount.
 
-```bash
+All data comes from the API. There are no mock numbers; seeded demo records are labelled "Simulated".
+
+## Run
+
+```sh
 npm install
+```
+
+```sh
 npm run dev
 ```
 
-Create a production bundle with `npm run build`.
+The portal opens at http://localhost:5173 and talks to `http://localhost:5000/api` by default. To use another backend, create `.env.local`:
 
-## Technology
+```
+VITE_API_URL=http://192.168.1.42:5000/api
+```
 
-React, TypeScript, Vite, React Router, Tailwind CSS (configured for future utility use), Lucide icons, Framer Motion, Recharts, Axios, and Leaflet dependencies for a future live map implementation.
+The backend must allow the portal's origin in `CORS_ORIGINS`. Production build: `npm run build`.
 
-## Structure
-
-- `src/App.tsx` — routed UI and reusable portal view components
-- `src/index.css` and `src/constants/theme.ts` — central visual system and responsive layout
-- `src/types` — shared backend-compatible domain types
-- `src/api` — intentionally unconnected REST service contracts
-- `src/mocks/portalData.ts` — **development-preview data only**, completely isolated from UI/API services
-- `src/routes/ProtectedRoute.tsx` — authentication integration seam
-
-## Connecting the existing backend
-
-Set `VITE_API_URL` to the backend API base URL, implement the request functions in `src/api`, and replace data imports from `src/mocks/portalData.ts` with hooks/services that call those functions. No backend, database, fake server, secrets, or credentials are included in this project.
+See the [root README](../README.md) for setup, demo accounts and architecture.

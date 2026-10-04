@@ -1,6 +1,5 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  Alert,
   Image,
   KeyboardAvoidingView,
   Platform,
@@ -14,7 +13,11 @@ import {
 import { launchCamera, launchImageLibrary, Asset } from 'react-native-image-picker';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { HomeStackParamList } from '../../navigation/AppNavigator';
-import { ensureLocationPermission, getCurrentCoordinates } from '../../utils/location';
+import {
+  ensureLocationPermission,
+  getCurrentCoordinates,
+  usingDemoLocation,
+} from '../../utils/location';
 import { validateDescription, validateAddress } from '../../utils/validation';
 import { createComplaint } from '../../services/complaint';
 import { ApiError } from '../../services/api';
@@ -22,6 +25,7 @@ import Button from '../../components/Button';
 import { colors } from '../../constants/colors';
 import { radius, spacing, typography } from '../../constants/spacing';
 import type { Coordinates } from '../../types/complaint';
+import { generateUuid } from '../../utils/uuid';
 
 type Props = NativeStackScreenProps<HomeStackParamList, 'ReportWaste'>;
 
@@ -44,6 +48,9 @@ export default function ReportWasteScreen({ navigation }: Props) {
   const [formError, setFormError] = useState<string | null>(null);
 
   const [submitting, setSubmitting] = useState(false);
+  // One key per report: a retry after a timeout returns the complaint the
+  // server already created instead of creating a second one.
+  const idempotencyKeyRef = useRef<string | null>(null);
   const [location, setLocation] = useState<LocationState>({
     status: 'checking',
   });
@@ -97,6 +104,9 @@ export default function ReportWasteScreen({ navigation }: Props) {
     const result = await launchCamera({
       mediaType: 'photo',
       quality: 0.7,
+      // Keeps uploads well under the backend's 5MB limit.
+      maxWidth: 1600,
+      maxHeight: 1600,
       saveToPhotos: false,
     });
 
@@ -127,6 +137,8 @@ export default function ReportWasteScreen({ navigation }: Props) {
     const result = await launchImageLibrary({
       mediaType: 'photo',
       quality: 0.7,
+      maxWidth: 1600,
+      maxHeight: 1600,
     });
 
     if (result.didCancel) {
@@ -153,17 +165,15 @@ export default function ReportWasteScreen({ navigation }: Props) {
   const handleSubmit = async () => {
     const descError = validateDescription(description);
     const addrError = validateAddress(address);
-    const imgError = !image
-      ? 'Please add a photo of the waste.'
-      : null;
 
     setDescriptionError(descError);
     setAddressError(addrError);
-    setImageError(imgError);
+    setImageError(null);
     setFormError(null);
 
-    // Stop if normal validation fails
-    if (descError || addrError || imgError) {
+    // A photo is optional (the backend accepts text-only reports), but it
+    // gives a much better AI assessment, so the UI encourages it.
+    if (descError || addrError) {
       return;
     }
 
@@ -181,78 +191,32 @@ export default function ReportWasteScreen({ navigation }: Props) {
       // ----------------------------------------------------------
       // Send complaint to backend
       // Backend performs:
-      // 1. Gemini extraction
-      // 2. Nearby complaint search
-      // 3. Gemini semantic duplicate detection
-      // 4. Priority analysis
-      // 5. Sentiment analysis
-      // 6. Duplicate linking
+      // 1. One AI analysis of photo + description
+      // 2. Nearby complaint search + AI duplicate suggestion
+      // 3. Rule-based priority from the analysed features
       // ----------------------------------------------------------
 
+      idempotencyKeyRef.current ??= generateUuid();
+
       const result = await createComplaint({
+        idempotencyKey: idempotencyKeyRef.current,
         description: description.trim(),
         address: address.trim(),
         latitude: location.coords.latitude,
         longitude: location.coords.longitude,
-        imageUri: image!.uri!,
-        imageName: image!.fileName ?? 'complaint.jpg',
-        imageType: image!.type ?? 'image/jpeg',
+        ...(image?.uri && {
+          imageUri: image.uri,
+          imageName: image.fileName ?? 'complaint.jpg',
+          imageType: image.type ?? 'image/jpeg',
+        }),
       });
 
       // ----------------------------------------------------------
-      // AI DUPLICATE DETECTION RESULT
+      // SUCCESS: show what the AI made of it (incl. any duplicate
+      // suggestion; the complaint is saved either way).
       // ----------------------------------------------------------
 
-      if (result.duplicate?.detected) {
-        const similarity = Math.round(
-          (result.duplicate.similarityScore ?? 0) * 100,
-        );
-
-        const summary =
-          result.duplicate.matchingComplaintSummary ??
-          'A similar complaint already exists nearby.';
-
-        const shouldContinue = await new Promise<boolean>(
-          (resolve) => {
-            Alert.alert(
-              'Similar Complaint Found',
-              `AI detected a similar complaint nearby.\n\n` +
-                `${summary}\n\n` +
-                `Similarity: ${similarity}%\n\n` +
-                `Would you still like to submit your complaint?`,
-              [
-                {
-                  text: 'Cancel',
-                  style: 'cancel',
-                  onPress: () => resolve(false),
-                },
-                {
-                  text: 'Submit Anyway',
-                  style: 'default',
-                  onPress: () => resolve(true),
-                },
-              ],
-              {
-                cancelable: false,
-              },
-            );
-          },
-        );
-
-        // Citizen cancelled submission
-        if (!shouldContinue) {
-          setSubmitting(false);
-          return;
-        }
-      }
-
-      // ----------------------------------------------------------
-      // SUCCESS
-      // ----------------------------------------------------------
-
-      navigation.replace('ComplaintDetails', {
-        id: result.complaint.id,
-      });
+      navigation.replace('SubmissionResult', { result });
     } catch (e) {
       setFormError(
         e instanceof ApiError
@@ -284,8 +248,15 @@ export default function ReportWasteScreen({ navigation }: Props) {
         ====================================================== */}
 
         <Text style={styles.sectionLabel}>
-          1. Photo
+          1. Photo (recommended)
         </Text>
+
+        {!image && (
+          <Text style={styles.hintText}>
+            Optional, but a photo lets the AI judge the type, size and hazards much
+            more accurately.
+          </Text>
+        )}
 
         {image ? (
           <View style={styles.previewWrapper}>
@@ -366,6 +337,12 @@ export default function ReportWasteScreen({ navigation }: Props) {
           state={location}
           onRetry={detectLocation}
         />
+
+        {usingDemoLocation && (
+          <Text style={styles.hintText}>
+            Demo location in use (set in config.ts), not this phone's GPS.
+          </Text>
+        )}
 
         {/* ======================================================
             ADDRESS
@@ -711,6 +688,12 @@ const styles = StyleSheet.create({
     ...typography.caption,
     color: colors.danger,
     marginTop: spacing.xs,
+  },
+
+  hintText: {
+    ...typography.caption,
+    color: colors.textSecondary,
+    marginBottom: spacing.sm,
   },
 
   formErrorBox: {

@@ -28,3 +28,23 @@
 
   <uses-feature android:name="android.hardware.camera" android:required="false" />
 -->
+
+<!--
+  The demo backend is plain HTTP on a LAN IP (see src/constants/config.ts).
+  Debug builds already allow cleartext traffic. For a RELEASE build, add this
+  attribute to the <application> tag:
+
+  android:usesCleartextTraffic="true"
+-->
+
+<!--
+  REQUIRED for the Nearby map (react-native-maps uses Google Maps on Android;
+  without a key the app crashes when that screen opens). Inside <application>:
+
+  <meta-data
+      android:name="com.google.android.geo.API_KEY"
+      android:value="YOUR_GOOGLE_MAPS_API_KEY" />
+
+  Get a key with the "Maps SDK for Android" enabled in Google Cloud Console.
+  Never commit a real key; keep it out of version control.
+-->

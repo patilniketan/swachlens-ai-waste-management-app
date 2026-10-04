@@ -9,6 +9,8 @@ import MyComplaintsScreen from '../screens/complaints/MyComplaintsScreen';
 import ComplaintDetailsScreen from '../screens/complaints/ComplaintDetailsScreen';
 import NearbyComplaintsScreen from '../screens/complaints/NearbyComplaintsScreen';
 import ProfileScreen from '../screens/profile/ProfileScreen';
+import SubmissionResultScreen from '../screens/complaints/SubmissionResultScreen';
+import type { CreateComplaintResponse } from '../services/complaint';
 import { colors } from '../constants/colors';
 
 export type ComplaintsStackParamList = {
@@ -18,6 +20,8 @@ export type ComplaintsStackParamList = {
 export type HomeStackParamList = {
   HomeMain: undefined;
   ReportWaste: undefined;
+  // What the AI made of a just-submitted report.
+  SubmissionResult: { result: CreateComplaintResponse };
 } & ComplaintsStackParamList;
 
 export type MyComplaintsStackParamList = {
@@ -49,6 +53,11 @@ function HomeStackNavigator() {
         name="ReportWaste"
         component={ReportWasteScreen}
         options={{ title: 'Report Waste' }}
+      />
+      <HomeStack.Screen
+        name="SubmissionResult"
+        component={SubmissionResultScreen}
+        options={{ title: 'Report Submitted', headerBackVisible: false, gestureEnabled: false }}
       />
       <HomeStack.Screen
         name="ComplaintDetails"

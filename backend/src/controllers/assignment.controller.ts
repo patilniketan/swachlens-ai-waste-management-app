@@ -1,6 +1,10 @@
+import fs from "fs/promises";
 import type { Response } from "express";
-import type { AuthRequest } from "../middleware/auth.middleware";
-import * as assignmentService from "../services/assignment.service";
+import type { AuthRequest } from "../middleware/auth.middleware.js";
+import * as assignmentService from "../services/assignment.service.js";
+import type { AssignmentStatusUpdate } from "../services/assignment.service.js";
+import { getParam } from "../utils/params.js";
+import { sendError } from "../utils/httpError.js";
 
 export const assignComplaint = async (req: AuthRequest, res: Response) => {
   try {
@@ -32,13 +36,7 @@ export const assignComplaint = async (req: AuthRequest, res: Response) => {
       data: assignment,
     });
   } catch (error) {
-    console.error("Assign complaint error:", error);
-
-    return res.status(400).json({
-      success: false,
-      message:
-        error instanceof Error ? error.message : "Failed to assign complaint",
-    });
+    return sendError(res, error, "ASSIGN COMPLAINT", "Failed to assign complaint");
   }
 };
 
@@ -70,41 +68,61 @@ export const getStaffTasks = async (req: AuthRequest, res: Response) => {
       data: tasks,
     });
   } catch (error) {
-    console.error("Get staff tasks error:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: "Failed to fetch staff tasks",
-    });
+    return sendError(res, error, "GET STAFF TASKS", "Failed to fetch staff tasks");
   }
 };
 
+// Multipart when completing: fields status, verifiedWeightKg, resolutionNotes
+// and the after photo in "afterImage". JSON is fine for other statuses.
 export const updateAssignmentStatus = async (
   req: AuthRequest,
   res: Response,
 ) => {
+  const discardUpload = () => {
+    if (req.file) fs.unlink(req.file.path).catch(() => undefined);
+  };
+
   try {
-    if (!req.userId) {
-      return res.status(401).json({
-        success: false,
-        message: "Unauthorized",
-      });
-    }
+    const id = getParam(req.params.id);
 
-    const { id } = req.params;
-    const { status } = req.body;
+    if (!id || !req.userId) {
+      discardUpload();
 
-    if (!status) {
       return res.status(400).json({
         success: false,
-        message: "Status is required",
+        message: "Assignment ID is required",
       });
     }
+
+    // Validated by assignmentStatusSchema.
+    const { status, verifiedWeightKg, resolutionNotes } = req.body as {
+      status: AssignmentStatusUpdate["status"];
+      verifiedWeightKg?: number;
+      resolutionNotes?: string;
+    };
+
+    if (status === "COMPLETED" && !req.file) {
+      return res.status(400).json({
+        success: false,
+        message: "An after photo (field \"afterImage\") is required to complete a task.",
+      });
+    }
+
+    // A photo is only kept as completion evidence.
+    if (status !== "COMPLETED") discardUpload();
 
     const assignment = await assignmentService.updateAssignmentStatus(
       id,
       req.userId,
-      status,
+      {
+        status,
+        verifiedWeightKg,
+        resolutionNotes,
+        afterImageUrl:
+          status === "COMPLETED" && req.file
+            ? `/uploads/${req.file.filename}`
+            : undefined,
+      },
     );
 
     return res.json({
@@ -113,15 +131,9 @@ export const updateAssignmentStatus = async (
       data: assignment,
     });
   } catch (error) {
-    console.error("Update assignment status error:", error);
+    discardUpload();
 
-    return res.status(400).json({
-      success: false,
-      message:
-        error instanceof Error
-          ? error.message
-          : "Failed to update assignment status",
-    });
+    return sendError(res, error, "UPDATE ASSIGNMENT STATUS", "Failed to update assignment status");
   }
 };
 
@@ -134,7 +146,14 @@ export const getStaffTaskById = async (req: AuthRequest, res: Response) => {
       });
     }
 
-    const { id } = req.params;
+    const id = getParam(req.params.id);
+
+    if (!id) {
+      return res.status(400).json({
+        success: false,
+        message: "Assignment ID is required",
+      });
+    }
 
     const task = await assignmentService.getStaffTaskById(id, req.userId);
 
@@ -143,12 +162,6 @@ export const getStaffTaskById = async (req: AuthRequest, res: Response) => {
       data: task,
     });
   } catch (error) {
-    console.error("Get staff task error:", error);
-
-    return res.status(404).json({
-      success: false,
-      message:
-        error instanceof Error ? error.message : "Failed to fetch staff task",
-    });
+    return sendError(res, error, "GET STAFF TASK", "Failed to fetch staff task");
   }
 };

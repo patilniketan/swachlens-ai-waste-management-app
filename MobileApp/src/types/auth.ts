@@ -16,6 +16,17 @@ export interface LoginResponseData {
   user?: User;
 }
 
+export interface SignupRequest {
+  email: string;
+  password: string;
+}
+
+export interface SignupResponseData {
+  /** false when the backend runs with DEMO_MODE=true: the account is ready to use. */
+  requiresVerification: boolean;
+  message: string;
+}
+
 export interface SignupRequestOtpRequest {
   email: string;
 }

@@ -1,10 +1,11 @@
 import type { Request, Response } from "express";
 import * as authService from "../services/auth.service.js";
 import { type AuthRequest } from "../middleware/auth.middleware.js";
+import { sendError } from "../utils/httpError.js";
 
 export const signup = async (req: Request, res: Response) => {
   try {
-    const { email, password } = req.body;
+    const { email, password } = req.body ?? {};
 
     if (!email || !password) {
       return res.status(400).json({
@@ -14,28 +15,23 @@ export const signup = async (req: Request, res: Response) => {
     }
 
     const result = await authService.signup({
-      email,
-      password,
+      email: String(email),
+      password: String(password),
     });
 
     return res.status(201).json({
       success: true,
-      message: "Account created successfully",
+      message: result.message,
       data: result,
     });
   } catch (error) {
-    console.error("SIGNUP ERROR:", error);
-
-    return res.status(400).json({
-      success: false,
-      message: error instanceof Error ? error.message : "Signup failed",
-    });
+    return sendError(res, error, "SIGNUP", "Signup failed. Please try again.");
   }
 };
 
 export const login = async (req: Request, res: Response) => {
   try {
-    const { email, password } = req.body;
+    const { email, password } = req.body ?? {};
 
     if (!email || !password) {
       return res.status(400).json({
@@ -45,8 +41,8 @@ export const login = async (req: Request, res: Response) => {
     }
 
     const result = await authService.login({
-      email,
-      password,
+      email: String(email),
+      password: String(password),
     });
 
     return res.json({
@@ -55,10 +51,7 @@ export const login = async (req: Request, res: Response) => {
       data: result,
     });
   } catch (error) {
-    return res.status(401).json({
-      success: false,
-      message: error instanceof Error ? error.message : "Login failed",
-    });
+    return sendError(res, error, "LOGIN", "Login failed. Please try again.");
   }
 };
 
@@ -94,7 +87,7 @@ export const me = async (req: AuthRequest, res: Response) => {
 
 export const sendOtp = async (req: Request, res: Response) => {
   try {
-    const { email } = req.body;
+    const { email } = req.body ?? {};
 
     if (!email) {
       return res.status(400).json({
@@ -103,23 +96,26 @@ export const sendOtp = async (req: Request, res: Response) => {
       });
     }
 
-    const result = await authService.sendOtp(email);
+    const result = await authService.sendOtp(String(email));
 
     return res.json({
       success: true,
+      message: result.message,
       data: result,
     });
   } catch (error) {
-    return res.status(400).json({
-      success: false,
-      message: error instanceof Error ? error.message : "Failed to send OTP",
-    });
+    return sendError(
+      res,
+      error,
+      "SEND OTP",
+      "Could not send a verification code. Please try again.",
+    );
   }
 };
 
 export const verifyOtp = async (req: Request, res: Response) => {
   try {
-    const { email, otp } = req.body;
+    const { email, otp } = req.body ?? {};
 
     if (!email || !otp) {
       return res.status(400).json({
@@ -128,7 +124,7 @@ export const verifyOtp = async (req: Request, res: Response) => {
       });
     }
 
-    const result = await authService.verifyOtp(email, otp);
+    const result = await authService.verifyOtp(String(email), String(otp));
 
     return res.json({
       success: true,
@@ -136,10 +132,11 @@ export const verifyOtp = async (req: Request, res: Response) => {
       data: result,
     });
   } catch (error) {
-    return res.status(400).json({
-      success: false,
-      message:
-        error instanceof Error ? error.message : "OTP verification failed",
-    });
+    return sendError(
+      res,
+      error,
+      "VERIFY OTP",
+      "Verification failed. Please try again.",
+    );
   }
 };

@@ -2,12 +2,12 @@ import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { colors } from '../constants/colors';
 import { radius, spacing, typography } from '../constants/spacing';
-import type { ComplaintStatus } from '../types/complaint';
+import { STATUS_LABELS, type ComplaintStatus } from '../types/complaint';
 
-const STATUS_STYLE: Record<ComplaintStatus, { bg: string; fg: string }> = {
+const STATUS_STYLE: Partial<Record<ComplaintStatus, { bg: string; fg: string }>> = {
   Pending: { bg: colors.statusPendingBg, fg: colors.statusPending },
   Assigned: { bg: colors.statusAssignedBg, fg: colors.statusAssigned },
-  'In Progress': { bg: colors.statusInProgressBg, fg: colors.statusInProgress },
+  InProgress: { bg: colors.statusInProgressBg, fg: colors.statusInProgress },
   Resolved: { bg: colors.statusResolvedBg, fg: colors.statusResolved },
 };
 
@@ -20,7 +20,9 @@ export default function StatusBadge({ status }: { status: ComplaintStatus | stri
   return (
     <View style={[styles.badge, { backgroundColor: style.bg }]}>
       <View style={[styles.dot, { backgroundColor: style.fg }]} />
-      <Text style={[styles.text, { color: style.fg }]}>{status}</Text>
+      <Text style={[styles.text, { color: style.fg }]}>
+        {STATUS_LABELS[status as ComplaintStatus] ?? status}
+      </Text>
     </View>
   );
 }

@@ -10,54 +10,98 @@ import {
   verifyComplaint,
   mergeComplaints,
   getTodaysTasks,
-} from "../controllers/complaint.controller";
+  confirmDuplicate,
+  rejectDuplicate,
+} from "../controllers/complaint.controller.js";
 
-import { authenticate } from "../middleware/auth.middleware";
-import { requireRole } from "../middleware/role.middleware";
-import { upload } from "../middleware/upload.middleware";
+import { authenticate } from "../middleware/auth.middleware.js";
+import { requireRole } from "../middleware/role.middleware.js";
+import { complaintCreateLimiter } from "../middleware/rateLimit.middleware.js";
+import { upload, verifyImageContent } from "../middleware/upload.middleware.js";
+import { validateBody } from "../middleware/validate.middleware.js";
+import {
+  complaintCreateSchema,
+  complaintUpdateSchema,
+  complaintVerifySchema,
+  confirmDuplicateSchema,
+  mergeComplaintsSchema,
+  rejectDuplicateSchema,
+} from "../validation/schemas.js";
 
 const router = Router();
 
-// Create complaint
-router.post("/", authenticate, upload.single("image"), createComplaint);
+const staffOnly = requireRole("STAFF", "ADMIN");
+
+// Create complaint. Rate limit before upload so throttled requests store
+// nothing; image bytes are checked before the body is validated.
+router.post(
+  "/",
+  authenticate,
+  complaintCreateLimiter,
+  upload.single("image"),
+  verifyImageContent,
+  validateBody(complaintCreateSchema),
+  createComplaint,
+);
 
 // Get logged-in user's complaints
 router.get("/", authenticate, getComplaints);
 
-// Get nearby complaints
+// Get nearby complaints (no reporter identifiers)
 router.get("/nearby", authenticate, getNearbyComplaints);
 
-// Get hotspots
+// Get hotspots (aggregates only)
 router.get("/hotspots", authenticate, getHotspots);
 
 // Get today's scheduled tasks
-router.get(
-  "/todays-tasks",
-  authenticate,
-  requireRole("STAFF", "ADMIN"),
-  getTodaysTasks,
-);
+router.get("/todays-tasks", authenticate, staffOnly, getTodaysTasks);
 
 // Merge complaints into master complaint
 router.post(
   "/merge",
   authenticate,
-  requireRole("STAFF", "ADMIN"),
+  staffOnly,
+  validateBody(mergeComplaintsSchema),
   mergeComplaints,
 );
 
-// Get single complaint
+// Get single complaint: citizens only their own, staff/admin any
 router.get("/:id", authenticate, getComplaintById);
 
-// Update complaint
-router.patch("/:id", authenticate, updateComplaint);
+// Update complaint - STAFF and ADMIN only, whitelisted fields/enums
+router.patch(
+  "/:id",
+  authenticate,
+  staffOnly,
+  validateBody(complaintUpdateSchema),
+  updateComplaint,
+);
 
 // Verify complaint - STAFF and ADMIN only
 router.post(
   "/:id/verify",
   authenticate,
-  requireRole("STAFF", "ADMIN"),
+  staffOnly,
+  validateBody(complaintVerifySchema),
   verifyComplaint,
+);
+
+// Confirm the AI duplicate suggestion (links + vote) - STAFF and ADMIN only
+router.post(
+  "/:id/confirm-duplicate",
+  authenticate,
+  staffOnly,
+  validateBody(confirmDuplicateSchema),
+  confirmDuplicate,
+);
+
+// Reject the AI duplicate suggestion - STAFF and ADMIN only
+router.post(
+  "/:id/reject-duplicate",
+  authenticate,
+  staffOnly,
+  validateBody(rejectDuplicateSchema),
+  rejectDuplicate,
 );
 
 export default router;
